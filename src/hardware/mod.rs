@@ -1,6 +1,7 @@
 //! Everything that touches the device. No UI code belongs below this module.
 
 pub mod device;
+pub mod keycode;
 pub mod profile;
 pub mod protocol;
 

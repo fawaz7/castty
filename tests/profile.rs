@@ -305,3 +305,27 @@ fn factory_buttons_are_the_defaults() {
         assert_eq!(p.buttons[i], button.default_action(), "{}", button.label());
     }
 }
+
+/// The device stores standard HID usage codes: assigning `w` in the vendor
+/// software wrote 0x1a, which is exactly what the HID table specifies.
+#[test]
+fn hid_keycodes_match_the_standard_table() {
+    use castty::hardware::keycode;
+    assert_eq!(keycode::from_keyval('w' as u32), Some(0x1a));
+    assert_eq!(keycode::label(0x1a), "W");
+
+    assert_eq!(keycode::from_keyval('a' as u32), Some(0x04));
+    assert_eq!(keycode::from_keyval('z' as u32), Some(0x1d));
+    assert_eq!(keycode::from_keyval('1' as u32), Some(0x1e));
+    assert_eq!(keycode::from_keyval('0' as u32), Some(0x27));
+    assert_eq!(keycode::from_keyval(0xffbe), Some(0x3a)); // F1
+    assert_eq!(keycode::label(0x3a), "F1");
+    assert_eq!(keycode::label(0x45), "F12");
+    assert_eq!(keycode::from_keyval(0x0020), Some(0x2c)); // space
+    assert_eq!(keycode::label(0x2c), "Space");
+
+    // capitals map to the same key; the device stores keys, not characters
+    assert_eq!(keycode::from_keyval('W' as u32), keycode::from_keyval('w' as u32));
+    // unmapped keys are refused rather than stored as something meaningless
+    assert_eq!(keycode::from_keyval(0xffe1), None); // Shift_L
+}

@@ -230,6 +230,10 @@ fn build(app: &adw::Application) {
             preview.set_state(led_page.preview_state());
         }
     };
+    // The key-capture dialog needs a parent window, so wire it once the window
+    // exists rather than inside the page's constructor.
+    buttons_page.connect_key_assignment(window.upcast_ref::<gtk::Window>(), mark_dirty.clone());
+
     led_page.connect_changed(mark_dirty.clone());
     dpi_page.connect_changed(mark_dirty.clone());
     buttons_page.connect_changed(mark_dirty.clone());
