@@ -201,10 +201,16 @@ impl Castty {
             Message::Apply => {
                 self.lighting.apply_to(&mut self.profiles[self.current]);
                 self.sensor.apply_to(&mut self.profiles[self.current]);
-                self.buttons.apply_to(&mut self.profiles[self.current], &self.library);
-                let profile = self.profiles[self.current].clone();
-                self.worker.send(worker::Job::WriteProfile(Box::new(profile)));
-                self.dirty = false;
+                match self.buttons.apply_to(&mut self.profiles[self.current], &self.library) {
+                    Ok(()) => {
+                        let profile = self.profiles[self.current].clone();
+                        self.worker.send(worker::Job::WriteProfile(Box::new(profile)));
+                        self.dirty = false;
+                    }
+                    // The macro area is full; nothing is sent to the mouse, so
+                    // the write is not silently reported as saved.
+                    Err(error) => self.status = format!("Not saved: {error}"),
+                }
             }
             Message::Tick => {}
             Message::Device(update) => match update {

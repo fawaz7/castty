@@ -171,8 +171,9 @@ fn buttons_keep_a_macro_that_is_not_in_the_library() {
 
     // Applying must not clear it.
     let mut written = profile.clone();
-    state.apply_to(&mut written, &library);
-    assert!(matches!(written.buttons[4], ButtonAction::Macro { .. }));
+    state.apply_to(&mut written, &library).unwrap();
+    let stored = written.macro_events(written.buttons[4]);
+    assert_eq!(stored, vec![MacroEvent { key: 0x05, pressed: true, delay_ms: 0 }]);
 }
 
 #[test]
@@ -182,7 +183,7 @@ fn buttons_round_trip_plain_actions() {
     let mut state = buttons::State::from_profile(&profile, &library);
     state.slots[1] = buttons::Slot::Action(ButtonAction::Disabled);
     state.slots[5] = buttons::Slot::Action(ButtonAction::ProfileSwitch(0xf0));
-    state.apply_to(&mut profile, &library);
+    state.apply_to(&mut profile, &library).unwrap();
 
     let back = buttons::State::from_profile(&profile, &library);
     assert_eq!(back.slots[1], buttons::Slot::Action(ButtonAction::Disabled));

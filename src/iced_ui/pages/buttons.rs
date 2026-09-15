@@ -73,7 +73,11 @@ impl State {
         }
     }
 
-    pub fn apply_to(&self, profile: &mut Profile, library: &Library) {
+    pub fn apply_to(
+        &self,
+        profile: &mut Profile,
+        library: &Library,
+    ) -> Result<(), crate::hardware::profile::ValueError> {
         // Read what is already stored before rewriting the shared macro area,
         // so a macro no longer in the library can be carried through.
         let existing = profile.macros();
@@ -87,8 +91,11 @@ impl State {
                 Slot::Keep => macros[i] = existing[i].clone(),
             }
         }
-        // Macros share one area, so every assignment is packed together.
-        let _ = profile.set_macros(&macros);
+        // Macros share one area, so every assignment is packed together. A
+        // capacity error here must reach the caller: the plain button
+        // reassignments above have already landed, so silently swallowing it
+        // would leave the macro half of an Apply looking like it succeeded.
+        profile.set_macros(&macros)
     }
 
     pub fn update(&mut self, message: Message) {
