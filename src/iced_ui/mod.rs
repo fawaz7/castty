@@ -3,10 +3,9 @@
 //! Everything below `hardware`, `config` and `macros` is unchanged — those
 //! layers never depended on a toolkit.
 
-pub mod about;
 pub mod art;
 pub mod colour_picker;
-pub mod lighting;
+pub mod pages;
 pub mod preview;
 pub mod settings;
 pub mod theme;
@@ -18,12 +17,21 @@ use crate::hardware::Profile;
 use crate::macros::Library;
 use settings::Settings;
 use theme::Palette;
-use widgets::GAP;
 
 use iced::widget::{button, column, container, row, scrollable, text, Space};
 use iced::{Element, Length, Subscription, Task};
 use std::rc::Rc;
 use std::time::Instant;
+
+/// How much room the mouse gets on a page.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Hero {
+    /// Drives the page height; the mouse is the subject.
+    Large,
+    /// A fixed compact render that never competes with the content beside it.
+    Small,
+    None,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
@@ -56,9 +64,14 @@ impl Page {
         }
     }
 
-    /// The preview only earns its space where the mouse itself is the subject.
-    fn shows_preview(self) -> bool {
-        matches!(self, Page::Lighting | Page::Buttons)
+    /// The mouse leads where it is the subject, shrinks where it is context,
+    /// and goes away where it would be decoration.
+    fn hero(self) -> Hero {
+        match self {
+            Page::Lighting | Page::Buttons => Hero::Large,
+            Page::Sensor | Page::Macros | Page::Profiles => Hero::Small,
+            Page::About => Hero::None,
+        }
     }
 }
 
@@ -68,8 +81,8 @@ pub enum Message {
     ProfileSelected(usize),
     Apply,
     Device(worker::Update),
-    Lighting(lighting::Message),
-    About(about::Message),
+    Lighting(pages::lighting::Message),
+    About(pages::about::Message),
     Tick,
 }
 
@@ -84,7 +97,7 @@ pub struct Castty {
     settings: Settings,
     worker: worker::Handle,
     art: Rc<art::Art>,
-    lighting: lighting::State,
+    lighting: pages::lighting::State,
     started: Instant,
 }
 
@@ -93,7 +106,7 @@ impl Castty {
         let (worker, _) = worker::spawn();
         worker.send(worker::Job::Connect);
         let profiles = config::load_all();
-        let lighting = lighting::State::from_profile(&profiles[0]);
+        let lighting = pages::lighting::State::from_profile(&profiles[0]);
         (
             Castty {
                 lighting,
@@ -113,7 +126,7 @@ impl Castty {
     }
 
     fn palette(&self) -> Palette {
-        self.settings.theme.palette()
+        theme::resolve(self.settings.theme, self.settings.accent)
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -122,21 +135,25 @@ impl Castty {
             Message::ProfileSelected(index) => {
                 if index < self.profiles.len() {
                     self.current = index;
-                    self.lighting = lighting::State::from_profile(&self.profiles[index]);
+                    self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
                 }
             }
             Message::Lighting(message) => {
                 self.lighting.update(message);
                 self.dirty = true;
             }
-            Message::About(about::Message::ThemeChanged(named)) => {
+            Message::About(pages::about::Message::ThemeChanged(named)) => {
                 self.settings.theme = named;
                 self.settings.save();
             }
-            Message::About(about::Message::OpenGithub) => {
+            Message::About(pages::about::Message::AccentChanged(accent)) => {
+                self.settings.accent = accent;
+                self.settings.save();
+            }
+            Message::About(pages::about::Message::OpenGithub) => {
                 // Best effort; a missing opener is not worth an error dialog.
                 let _ = std::process::Command::new("xdg-open")
-                    .arg(about::GITHUB)
+                    .arg(pages::about::GITHUB)
                     .spawn();
             }
             Message::Apply => {
@@ -168,7 +185,7 @@ impl Castty {
 
     fn subscription(&self) -> Subscription<Message> {
         let device = worker::subscription().map(Message::Device);
-        if self.page.shows_preview() && self.lighting.animated() {
+        if self.page.hero() != Hero::None && self.lighting.animated() {
             Subscription::batch([
                 device,
                 iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::Tick),
@@ -178,86 +195,18 @@ impl Castty {
         }
     }
 
-    fn view(&self) -> Element<'_, Message> {
-        let palette = self.palette();
-
-        let content: Element<'_, Message> = match self.page {
-            Page::Lighting => lighting::view(&self.lighting, &palette).map(Message::Lighting),
-            Page::About => about::view(self.settings.theme, &palette).map(Message::About),
-            other => widgets::card(
-                &palette,
-                other.label(),
-                Some("Coming next"),
-                text("").size(1.0),
-            ),
-        };
-
-        let page_body: Element<'_, Message> = if self.page.shows_preview() {
-            let seconds = self.started.elapsed().as_secs_f32();
-            let (wheel, logo) = self.lighting.lit(seconds);
-            let stage_style = palette;
-            let stage = container(
-                iced::widget::canvas(preview::Preview {
-                    art: self.art.clone(),
-                    wheel,
-                    logo,
-                    show_buttons: self.page == Page::Buttons,
-                    palette,
-                })
-                .width(Length::Fill)
-                .height(Length::Fill),
-            )
-            .width(Length::FillPortion(4))
-            .height(Length::Fill)
-            .style(move |_t| stage_style.stage());
-
-            row![stage, container(content).width(Length::FillPortion(5))]
-                .spacing(GAP)
-                .height(Length::Fill)
-                .into()
-        } else {
-            content
-        };
-
-        let scrolled = scrollable(container(page_body).padding(GAP)).height(Length::Fill);
-
-        row![self.sidebar(&palette), column![self.header(&palette), scrolled, self.footer(&palette)]]
-            .height(Length::Fill)
-            .into()
-    }
-
-    fn sidebar(&self, palette: &Palette) -> Element<'_, Message> {
+    fn tab_bar(&self, palette: &Palette) -> Element<'_, Message> {
         let style = *palette;
-        let items = Page::ALL.iter().fold(column![].spacing(4), |acc, page| {
+        let tabs = Page::ALL.iter().fold(row![].spacing(2.0), |acc, page| {
             let selected = *page == self.page;
             acc.push(
                 button(text(page.label()).size(14.0))
-                    .width(Length::Fill)
-                    .padding([9, 14])
-                    .style(move |_t, status| nav_style(&style, status, selected))
+                    .padding([8.0, 16.0])
+                    .style(move |_t, status| widgets::segment(&style, status, selected))
                     .on_press(Message::PageSelected(*page)),
             )
         });
 
-        container(
-            column![
-                container(text("castty").size(19.0)).padding([4, 14]),
-                Space::new().height(12),
-                items,
-                widgets::spacer(),
-            ]
-            .spacing(2)
-            .padding(12),
-        )
-        .width(Length::Fixed(190.0))
-        .height(Length::Fill)
-        .style(move |_t| style.sidebar())
-        .into()
-    }
-
-    fn header(&self, palette: &Palette) -> Element<'_, Message> {
-        let style = *palette;
-        let dim = palette.dim;
         let names: Vec<String> = self
             .profiles
             .iter()
@@ -274,21 +223,81 @@ impl Castty {
 
         container(
             row![
-                text("Profile").size(13.0).style(move |_t| text::Style { color: Some(dim) }),
+                text("castty").size(18.0),
+                Space::new().width(Length::Fixed(18.0)),
+                tabs,
+                widgets::spacer(),
                 iced::widget::pick_list(names.clone(), selected, move |chosen| {
                     let index = names.iter().position(|n| *n == chosen).unwrap_or(0);
                     Message::ProfileSelected(index)
                 }),
-                widgets::spacer(),
                 button(text("Apply").size(14.0))
-                    .padding([9, 22])
+                    .padding([9.0, 22.0])
                     .style(move |_t, status| widgets::primary(&style, status))
                     .on_press_maybe(self.dirty.then_some(Message::Apply)),
             ]
             .align_y(iced::Alignment::Center)
-            .spacing(12),
+            .spacing(10.0),
         )
-        .padding([12.0, GAP])
+        .padding([12.0, widgets::GAP])
+        .into()
+    }
+
+    fn hero(&self, palette: &Palette) -> Element<'_, Message> {
+        let seconds = self.started.elapsed().as_secs_f32();
+        let (wheel, logo) = self.lighting.lit(seconds);
+        let style = *palette;
+        container(
+            iced::widget::canvas(preview::Preview {
+                art: self.art.clone(),
+                wheel,
+                logo,
+                show_buttons: self.page == Page::Buttons,
+                palette: *palette,
+            })
+            .width(Length::Fill)
+            .height(Length::Fill),
+        )
+        .style(move |_t| style.stage())
+        .into()
+    }
+
+    fn view(&self) -> Element<'_, Message> {
+        let palette = self.palette();
+
+        let content: Element<'_, Message> = match self.page {
+            Page::Lighting => pages::lighting::view(&self.lighting, &palette).map(Message::Lighting),
+            Page::About => {
+                pages::about::view(self.settings.theme, self.settings.accent, &palette)
+                    .map(Message::About)
+            }
+            other => widgets::card(&palette, other.label(), Some("Coming next"), text("").size(1.0)),
+        };
+
+        let body: Element<'_, Message> = match self.page.hero() {
+            Hero::Large => row![
+                container(self.hero(&palette)).width(Length::FillPortion(5)).height(Length::Fill),
+                container(content).width(Length::FillPortion(5)),
+            ]
+            .spacing(widgets::GAP)
+            .height(Length::Fill)
+            .into(),
+            Hero::Small => column![
+                container(self.hero(&palette))
+                    .width(Length::Fill)
+                    .height(Length::Fixed(150.0)),
+                content,
+            ]
+            .spacing(widgets::GAP)
+            .into(),
+            Hero::None => content,
+        };
+
+        column![
+            self.tab_bar(&palette),
+            scrollable(container(body).padding(widgets::GAP)).height(Length::Fill),
+            self.footer(&palette),
+        ]
         .into()
     }
 
@@ -299,24 +308,8 @@ impl Castty {
                 .size(12.0)
                 .style(move |_t| text::Style { color: Some(dim) }),
         )
-        .padding([8.0, GAP])
+        .padding([8.0, widgets::GAP])
         .into()
-    }
-}
-
-fn nav_style(palette: &Palette, status: button::Status, selected: bool) -> button::Style {
-    let background = if selected {
-        palette.surface
-    } else if matches!(status, button::Status::Hovered) {
-        palette.raised
-    } else {
-        iced::Color::TRANSPARENT
-    };
-    button::Style {
-        background: Some(iced::Background::Color(background)),
-        text_color: if selected { palette.text } else { palette.dim },
-        border: iced::Border { radius: 9.0.into(), ..Default::default() },
-        ..Default::default()
     }
 }
 

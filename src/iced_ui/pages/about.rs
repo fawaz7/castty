@@ -1,7 +1,7 @@
 //! About and appearance.
 
-use super::theme::{Named, Palette};
-use super::widgets::{self, GAP};
+use super::super::theme::{Accent, Named, Palette};
+use super::super::widgets::{self, GAP};
 use iced::widget::{button, column, row, text};
 use iced::{Element, Length};
 
@@ -11,10 +11,11 @@ pub const GITHUB: &str = "https://github.com/fawaz7";
 #[derive(Debug, Clone)]
 pub enum Message {
     ThemeChanged(Named),
+    AccentChanged(Accent),
     OpenGithub,
 }
 
-pub fn view<'a>(current: Named, palette: &Palette) -> Element<'a, Message> {
+pub fn view<'a>(current: Named, accent: Accent, palette: &Palette) -> Element<'a, Message> {
     let dim = palette.dim;
     let swatches = Named::ALL
         .iter()
@@ -44,11 +45,31 @@ pub fn view<'a>(current: Named, palette: &Palette) -> Element<'a, Message> {
             )
         });
 
+    let accents = Accent::ALL.iter().fold(row![].spacing(6.0), |acc, option| {
+        let chosen = *option == accent;
+        let colour = option.colour(current);
+        let style = *palette;
+        acc.push(
+            button(swatch(colour))
+                .padding(6.0)
+                .style(move |_t, status| widgets::segment(&style, status, chosen))
+                .on_press(Message::AccentChanged(*option)),
+        )
+    });
+
     let appearance = widgets::card(
         palette,
         "Appearance",
         Some("Chosen here, not taken from the desktop, so it looks the same everywhere"),
-        swatches,
+        column![
+            swatches,
+            text("Accent").size(13.0).style({
+                let dim = palette.dim;
+                move |_t| text::Style { color: Some(dim) }
+            }),
+            accents,
+        ]
+        .spacing(12.0),
     );
 
     let about_body = column![

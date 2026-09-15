@@ -4,10 +4,10 @@
 //! hardware reads a single mode byte — verified by writing different modes to
 //! each and watching both follow the first.
 
-use super::colour_picker::{self, ColourPicker};
-use super::theme::Palette;
+use super::super::colour_picker::{self, ColourPicker};
+use super::super::theme::Palette;
 use crate::hardware::{Effect, LedMode, Profile, EFFECTS};
-use super::widgets::{self, GAP};
+use super::super::widgets::{self, GAP};
 use iced::widget::{canvas, checkbox, column, pick_list, row, text};
 use iced::{Element, Length};
 
@@ -191,13 +191,13 @@ fn beat(phase: f32) -> Option<f32> {
 }
 
 fn shade(rgb: (u8, u8, u8), brightness: f32, hue: Option<f32>) -> (u8, u8, u8) {
-    let (h, s, v) = super::art::rgb_to_hsv(rgb.0, rgb.1, rgb.2);
+    let (h, s, v) = super::super::art::rgb_to_hsv(rgb.0, rgb.1, rgb.2);
     match hue {
         // Rainbow cycles regardless of the stored colour, but an LED set to
         // black stays off.
-        Some(cycled) if v > 0.0 => super::art::hsv_to_rgb(cycled, 1.0, brightness),
+        Some(cycled) if v > 0.0 => super::super::art::hsv_to_rgb(cycled, 1.0, brightness),
         Some(_) => (0, 0, 0),
-        None => super::art::hsv_to_rgb(h, s, v * brightness),
+        None => super::super::art::hsv_to_rgb(h, s, v * brightness),
     }
 }
 
