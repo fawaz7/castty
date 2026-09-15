@@ -189,3 +189,62 @@ fn buttons_round_trip_plain_actions() {
     assert_eq!(back.slots[5], buttons::Slot::Action(ButtonAction::ProfileSwitch(0xf0)));
     assert_eq!(BUTTONS.len(), 6);
 }
+
+use castty::iced_ui::pages::macros as macros_page;
+
+/// Saving a draft under a new name must move the entry, not leave a copy.
+#[test]
+fn renaming_a_macro_moves_it() {
+    let mut library = library_with("Old");
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::Edit("Old".into()), &mut library);
+    state.update(macros_page::Message::NameChanged("New".into()), &mut library);
+    assert!(state.update(macros_page::Message::Save, &mut library));
+
+    assert!(library.find("Old").is_none(), "the old name should be gone");
+    assert!(library.find("New").is_some(), "the new name should exist");
+}
+
+/// Hold macros store presses only, so switching modes invalidates a recording.
+#[test]
+fn switching_to_hold_clears_the_recording() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, false), &mut library);
+    assert_eq!(state.draft_events(), 2);
+
+    state.update(macros_page::Message::TimingChanged(Timing::Hold), &mut library);
+    assert_eq!(state.draft_events(), 0, "a timed recording is not a hold recording");
+}
+
+/// A macro with no name or no events cannot be referred to or played back.
+#[test]
+fn saving_requires_a_name_and_events() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::NameChanged(String::new()), &mut library);
+    assert!(!state.update(macros_page::Message::Save, &mut library));
+    assert!(library.macros.is_empty());
+}
+
+/// Storage is shared across the profile: 32 slots, each macro costing its
+/// events plus a terminator.
+#[test]
+fn capacity_counts_terminators() {
+    let library = library_with("One");
+    let mut profile = factory();
+    let mut macros: [Option<castty::hardware::Macro>; 6] = Default::default();
+    macros[0] = Some(library.find("One").unwrap().to_device());
+    profile.set_macros(&macros).unwrap();
+
+    let (used, total) = macros_page::slots_used(&library, &profile);
+    assert_eq!(total, 32);
+    assert_eq!(used, 2, "one event plus its terminator");
+}

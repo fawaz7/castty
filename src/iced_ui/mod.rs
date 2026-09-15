@@ -84,6 +84,7 @@ pub enum Message {
     Lighting(pages::lighting::Message),
     Sensor(pages::sensor::Message),
     Buttons(pages::buttons::Message),
+    Macros(pages::macros::Message),
     About(pages::about::Message),
     Tick,
 }
@@ -101,6 +102,7 @@ pub struct Castty {
     lighting: pages::lighting::State,
     sensor: pages::sensor::State,
     buttons: pages::buttons::State,
+    macros: pages::macros::State,
     started: Instant,
 }
 
@@ -118,6 +120,7 @@ impl Castty {
                 lighting,
                 sensor,
                 buttons,
+                macros: pages::macros::State::default(),
                 art: Rc::new(art::Art::load()),
                 started: Instant::now(),
                 profiles,
@@ -156,6 +159,16 @@ impl Castty {
             Message::Buttons(message) => {
                 self.buttons.update(message);
                 self.dirty = true;
+            }
+            Message::Macros(message) => {
+                if self.macros.update(message, &mut self.library) {
+                    let _ = self.library.save();
+                    // A deleted or renamed macro changes what a button row shows.
+                    self.buttons = pages::buttons::State::from_profile(
+                        &self.profiles[self.current],
+                        &self.library,
+                    );
+                }
             }
             Message::Sensor(message) => {
                 let wants_device = self.sensor.update(message);
@@ -231,6 +244,15 @@ impl Castty {
                 iced::time::every(std::time::Duration::from_secs(1))
                     .map(|_| Message::Sensor(pages::sensor::Message::Tick)),
             );
+        }
+        if self.macros.recording {
+            // iced 0.14 exposes only `listen()`; there is no on_key_press or
+            // on_key_release helper.
+            subs.push(iced::keyboard::listen().filter_map(|event| match event {
+                iced::keyboard::Event::KeyPressed { key, .. } => key_to_message(key, true),
+                iced::keyboard::Event::KeyReleased { key, .. } => key_to_message(key, false),
+                _ => None,
+            }));
         }
         Subscription::batch(subs)
     }
@@ -311,6 +333,13 @@ impl Castty {
             Page::Buttons => {
                 pages::buttons::view(&self.buttons, &self.library, &palette).map(Message::Buttons)
             }
+            Page::Macros => pages::macros::view(
+                &self.macros,
+                &self.library,
+                &self.profiles[self.current],
+                &palette,
+            )
+            .map(Message::Macros),
             Page::About => {
                 pages::about::view(self.settings.theme, self.settings.accent, &palette)
                     .map(Message::About)
@@ -369,6 +398,56 @@ fn update(state: &mut Castty, message: Message) -> Task<Message> {
 
 fn subscription(state: &Castty) -> Subscription<Message> {
     state.subscription()
+}
+
+/// Translate a keyboard event into a macro event, ignoring keys the device has
+/// no code for rather than storing something meaningless.
+///
+/// Named keys are translated to the GDK keysym numbers `keycode::from_keyval`
+/// already understands, so that table stays the single source of truth for
+/// which keys the device can store -- this only has to know how iced spells
+/// the same keys.
+fn key_to_message(key: iced::keyboard::Key, pressed: bool) -> Option<Message> {
+    use iced::keyboard::key::Named;
+    use iced::keyboard::Key;
+
+    let named = match key {
+        Key::Character(ref c) => c.chars().next().map(|c| c as u32),
+        Key::Named(Named::Space) => Some(0x0020),
+        Key::Named(Named::Enter) => Some(0xff0d),
+        Key::Named(Named::Tab) => Some(0xff09),
+        Key::Named(Named::Backspace) => Some(0xff08),
+        Key::Named(Named::Escape) => Some(0xff1b),
+        Key::Named(Named::CapsLock) => Some(0xffe5),
+        Key::Named(Named::PrintScreen) => Some(0xff61),
+        Key::Named(Named::ScrollLock) => Some(0xff14),
+        Key::Named(Named::Pause) => Some(0xff13),
+        Key::Named(Named::Insert) => Some(0xff63),
+        Key::Named(Named::Home) => Some(0xff50),
+        Key::Named(Named::PageUp) => Some(0xff55),
+        Key::Named(Named::Delete) => Some(0xffff),
+        Key::Named(Named::End) => Some(0xff57),
+        Key::Named(Named::PageDown) => Some(0xff56),
+        Key::Named(Named::ArrowRight) => Some(0xff53),
+        Key::Named(Named::ArrowLeft) => Some(0xff51),
+        Key::Named(Named::ArrowDown) => Some(0xff54),
+        Key::Named(Named::ArrowUp) => Some(0xff52),
+        Key::Named(Named::F1) => Some(0xffbe),
+        Key::Named(Named::F2) => Some(0xffbf),
+        Key::Named(Named::F3) => Some(0xffc0),
+        Key::Named(Named::F4) => Some(0xffc1),
+        Key::Named(Named::F5) => Some(0xffc2),
+        Key::Named(Named::F6) => Some(0xffc3),
+        Key::Named(Named::F7) => Some(0xffc4),
+        Key::Named(Named::F8) => Some(0xffc5),
+        Key::Named(Named::F9) => Some(0xffc6),
+        Key::Named(Named::F10) => Some(0xffc7),
+        Key::Named(Named::F11) => Some(0xffc8),
+        Key::Named(Named::F12) => Some(0xffc9),
+        _ => None,
+    }?;
+    crate::hardware::keycode::from_keyval(named)
+        .map(|usage| Message::Macros(pages::macros::Message::KeyPressed(usage, pressed)))
 }
 
 fn app_theme(state: &Castty) -> iced::Theme {
