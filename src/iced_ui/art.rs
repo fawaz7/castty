@@ -34,7 +34,7 @@ impl Layer {
     pub fn tinted(&self, (r, g, b): (u8, u8, u8)) -> Handle {
         let (th, ts, tv) = rgb_to_hsv(r, g, b);
         let mut out = self.rgba.clone();
-        for px in out.chunks_exact_mut(4) {
+        for px in out.as_chunks_mut::<4>().0 {
             if px[3] == 0 {
                 continue;
             }

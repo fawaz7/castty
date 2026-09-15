@@ -139,7 +139,7 @@ fn draw_marks(frame: &mut Frame, origin: Point, scale: f32, palette: &Palette) {
             color: Color::WHITE,
             size: 14.0.into(),
             align_x: iced::alignment::Horizontal::Center.into(),
-            align_y: iced::alignment::Vertical::Center.into(),
+            align_y: iced::alignment::Vertical::Center,
             ..Text::default()
         });
     }
