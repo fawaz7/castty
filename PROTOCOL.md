@@ -76,13 +76,32 @@ Six records of **`<R> <G> <B> <mode>`** — the colour comes *first*, the mode b
 ```
 [39] [43]           two independently settable records  -> the two physical LEDs
 [47] [48]           two-byte gap, both zero
-[49] [53] [57] [61] four more records, all default (201,255,0)
+[49] [53] [57] [61] four more records -- inert, see below
 ```
+
+#### The four extra colour records are inert
+
+`[49]`, `[53]`, `[57]` and `[61]` are real records with the same `<R><G><B><mode>` shape, and the
+vendor software keeps them in step with the wheel colour, but **nothing on this device reads them**.
+
+Tested by setting each to a different colour, and then setting all four to magenta -- a colour no
+physical LED was using -- across all five profiles, and exercising everything that might surface
+them:
+
+- cycling all three DPI steps with the DPI button: colours unchanged
+- switching profiles from the mouse itself, through all five: colours changed to each profile's own
+  LED colour, with no magenta at any point
+
+No capture could have settled this: the vendor software always writes all four together, so they
+never varied independently. Only writing distinct values directly could separate them.
+
+They are most likely fields the shared Mionix software stack uses on another model. `castty` mirrors
+the wheel colour into them exactly as the vendor does -- harmless, and keeps our frames
+byte-identical to the vendor's.
 
 **`[39]` is the scroll wheel and `[43]` is the logo.** Established by lighting one at a time: with the
 wheel set to red alone, `[39]` held `(255,0,0)` and `[43]` was `(0,0,0)`; with the logo green alone,
-the reverse. They are independently settable. The remaining four always moved
-together and are most likely the DPI-step indicator colours — **not yet confirmed**.
+the reverse. They are independently settable.
 
 All six **mode** bytes always change together, and this reflects the hardware, not just the vendor
 app's habit. Two experiments, covering both nibbles:
@@ -243,6 +262,15 @@ same — the captured defaults are in `captures/factory-default-p*.bin`.
 
 Factory defaults: DPI 3000, LED `(201,255,0)` mode `0x01` solid, polling `[37]=1`, angle snapping `0`,
 angle tuning `0`.
+
+#### Profile switching works from the mouse alone
+
+Verified end to end: with a button bound to profile switch, pressing it cycles all five profiles with
+no software running, each showing its own stored LED colour. The LEDs go **dark for roughly 300 ms**
+during a switch, then come up in the new colour -- no flash or blink pattern.
+
+That confirms the whole mechanism together: the commit byte selecting the active profile, five
+profiles persisting independently on the device, and the button function doing what we decoded.
 
 #### Profile selection — solved
 

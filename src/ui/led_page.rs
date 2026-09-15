@@ -306,7 +306,10 @@ impl LedPage {
         };
         profile.set_wheel_colour(w.0, w.1, w.2);
         profile.set_logo_colour(l.0, l.1, l.2);
-        // The four non-physical records follow the wheel, as the vendor app does.
+        // The four non-physical records are inert on this device -- verified by
+        // setting them to a colour no LED used and finding it never appeared --
+        // but the vendor keeps them in step with the wheel, so we do too. It
+        // costs nothing and keeps our frames byte-identical to theirs.
         for led in profile.leds.iter_mut().skip(2) {
             (led.r, led.g, led.b) = w;
         }
