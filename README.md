@@ -65,6 +65,13 @@ castty reset                     # restore factory defaults
 castty -p 2 led 00ff00           # act on profile 2
 ```
 
+## Two things worth knowing
+
+**LED colours are approximate.** The mouse's blue channel is much dimmer than its red, so a colour
+with even a little red in it can look markedly warmer on the LED than in the picker. Full blue reads
+as a dark navy. This is how the hardware behaves — the Windows software is no different — and the
+value you pick is written unchanged rather than "corrected" behind your back.
+
 ## A caveat worth knowing
 
 **The mouse cannot be read back.** No command returns its stored settings — the vendor software

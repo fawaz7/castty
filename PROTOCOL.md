@@ -79,6 +79,18 @@ Six records of **`<R> <G> <B> <mode>`** — the colour comes *first*, the mode b
 [49] [53] [57] [61] four more records -- inert, see below
 ```
 
+#### LED colour response is not linear
+
+The channels are ordered `<R><G><B>` and written verbatim, but the LEDs do **not** render an sRGB
+value faithfully: the blue emitter is far less luminous than red. Full blue `0000ff` reads as a dark
+navy, while full red is vivid. A colour like `1d00ff` -- only 11% red -- therefore looks magenta
+rather than violet, because the weak blue cannot compete with it.
+
+This is ordinary RGB LED behaviour, not a fault or a sign of ageing, and the vendor software has the
+same characteristic; it writes the picked value unchanged too. `castty` does the same deliberately: a
+correction curve would mean writing different bytes than the colour chosen, and would make our
+results diverge from the vendor's for no gain in honesty.
+
 #### The four extra colour records are inert
 
 `[49]`, `[53]`, `[57]` and `[61]` are real records with the same `<R><G><B><mode>` shape, and the
