@@ -135,6 +135,15 @@ fn build(app: &adw::Application) {
         "Profiles",
         "view-list-symbolic",
     );
+    // Callouts are only meaningful next to the button rows.
+    stack.connect_visible_child_name_notify({
+        let preview = preview.clone();
+        move |stack| {
+            let on_buttons = stack.visible_child_name().as_deref() == Some("buttons");
+            preview.set_show_buttons(on_buttons);
+        }
+    });
+
     let switcher = adw::ViewSwitcher::builder()
         .stack(&stack)
         .policy(adw::ViewSwitcherPolicy::Wide)

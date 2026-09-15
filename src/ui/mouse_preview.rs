@@ -32,6 +32,17 @@ const WHEEL: &[u8] = include_bytes!("../../resources/scroll_wheel.png");
 const PREVIEW_W: i32 = 320;
 const PREVIEW_H: i32 = 392;
 
+/// Where each button sits on the artwork, as a fraction of the image, in the
+/// same order as `hardware::BUTTONS`. Read off the product render directly.
+const BUTTON_MARKS: [(f64, f64); 6] = [
+    (0.35, 0.22),  // left
+    (0.66, 0.22),  // right
+    (0.51, 0.235), // wheel click -- centre of the wheel, which spans 0.165-0.31
+    (0.20, 0.36),  // side, front
+    (0.20, 0.48),  // side, rear
+    (0.51, 0.40),  // DPI -- the button below the wheel, spanning 0.345-0.45
+];
+
 fn load(bytes: &'static [u8]) -> Option<Pixbuf> {
     let stream = gio::MemoryInputStream::from_bytes(&glib::Bytes::from_static(bytes));
     Pixbuf::from_stream(&stream, None::<&gio::Cancellable>).ok()
@@ -117,6 +128,8 @@ impl Default for PreviewState {
 pub struct MousePreview {
     pub widget: gtk::DrawingArea,
     state: Rc<Cell<PreviewState>>,
+    /// Numbered callouts, shown while the buttons page is visible.
+    show_buttons: Rc<Cell<bool>>,
 }
 
 /// Cycle lengths in seconds, **measured on the hardware** by counting cycles
@@ -203,6 +216,7 @@ impl MousePreview {
             .build();
 
         let state = Rc::new(Cell::new(PreviewState::default()));
+        let show_buttons = Rc::new(Cell::new(false));
         let body = load(BODY).and_then(|p| p.scale_simple(PREVIEW_W, PREVIEW_H, InterpType::Bilinear));
         let logo = load(LOGO).and_then(|p| Layer::new(&p));
         let wheel = load(WHEEL).and_then(|p| Layer::new(&p));
@@ -212,6 +226,7 @@ impl MousePreview {
         {
             let state = state.clone();
             let cache = cache.clone();
+            let show_buttons = show_buttons.clone();
             widget.set_draw_func(move |_, cr, _, _| {
                 let s = state.get();
                 let t = start.elapsed().as_secs_f64();
@@ -244,6 +259,10 @@ impl MousePreview {
                     cr.set_source_pixbuf(lp, ll.x, ll.y);
                     let _ = cr.paint();
                 }
+
+                if show_buttons.get() {
+                    draw_button_marks(cr);
+                }
             });
         }
 
@@ -260,12 +279,50 @@ impl MousePreview {
             });
         }
 
-        MousePreview { widget, state }
+        MousePreview { widget, state, show_buttons }
+    }
+
+    /// Show numbered callouts matching the rows on the buttons page.
+    pub fn set_show_buttons(&self, show: bool) {
+        if self.show_buttons.get() != show {
+            self.show_buttons.set(show);
+            self.widget.queue_draw();
+        }
     }
 
     pub fn set_state(&self, s: PreviewState) {
         self.state.set(s);
         self.widget.queue_draw();
+    }
+}
+
+/// Numbered badges over each button, so the page's rows can be matched to the
+/// physical mouse without guesswork.
+fn draw_button_marks(cr: &gtk::cairo::Context) {
+    const R: f64 = 13.0;
+    cr.select_font_face(
+        "sans-serif",
+        gtk::cairo::FontSlant::Normal,
+        gtk::cairo::FontWeight::Bold,
+    );
+    cr.set_font_size(15.0);
+
+    for (i, (fx, fy)) in BUTTON_MARKS.iter().enumerate() {
+        let (x, y) = (fx * PREVIEW_W as f64, fy * PREVIEW_H as f64);
+
+        cr.arc(x, y, R, 0.0, std::f64::consts::TAU);
+        cr.set_source_rgba(0.09, 0.09, 0.11, 0.92);
+        let _ = cr.fill_preserve();
+        cr.set_source_rgba(1.0, 1.0, 1.0, 0.95);
+        cr.set_line_width(2.0);
+        let _ = cr.stroke();
+
+        let label = (i + 1).to_string();
+        if let Ok(ext) = cr.text_extents(&label) {
+            cr.move_to(x - ext.width() / 2.0 - ext.x_bearing(), y + ext.height() / 2.0);
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            let _ = cr.show_text(&label);
+        }
     }
 }
 

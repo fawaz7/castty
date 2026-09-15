@@ -56,15 +56,21 @@ impl ButtonsPage {
         let group = adw::PreferencesGroup::builder()
             .title("Buttons")
             .description(
-                "Assignments are stored per profile. Take care leaving yourself without a \
-                 left click — you may need another pointing device to undo it.",
+                "Numbers match the callouts on the mouse. Assignments are stored per profile; \
+                 take care leaving yourself without a left click, as you may need another \
+                 pointing device to undo it.",
             )
             .build();
 
+        // Numbers match the callouts drawn on the preview, so a row can be tied
+        // to a physical button without having to guess which is which.
         let rows: Vec<adw::ComboRow> = BUTTONS
             .iter()
-            .map(|b| {
-                let row = adw::ComboRow::builder().title(b.label()).build();
+            .enumerate()
+            .map(|(i, b)| {
+                let row = adw::ComboRow::builder()
+                    .title(format!("{} — {}", i + 1, b.label()))
+                    .build();
                 group.add(&row);
                 row
             })
