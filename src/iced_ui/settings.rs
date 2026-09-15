@@ -1,6 +1,6 @@
 //! Persisted application settings, separate from device state.
 
-use super::theme::Named;
+use super::theme::{Accent, Named};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::{env, fs};
@@ -9,6 +9,8 @@ use std::{env, fs};
 pub struct Settings {
     #[serde(default)]
     pub theme: Named,
+    #[serde(default)]
+    pub accent: Accent,
 }
 
 fn path() -> PathBuf {

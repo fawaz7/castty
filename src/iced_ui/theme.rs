@@ -112,7 +112,7 @@ impl Named {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Palette {
     pub bg: Color,
     pub surface: Color,
@@ -197,4 +197,80 @@ impl Palette {
             ..Default::default()
         }
     }
+}
+
+/// An accent override. `Preset` keeps the theme's own.
+///
+/// A fixed set rather than free colour entry: an arbitrary accent can land
+/// unreadably close to a surface colour, and there is no contrast check at
+/// runtime to catch it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Accent {
+    #[default]
+    Preset,
+    Blue,
+    Teal,
+    Green,
+    Amber,
+    Orange,
+    Rose,
+    Violet,
+    Slate,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 9] = [
+        Accent::Preset,
+        Accent::Blue,
+        Accent::Teal,
+        Accent::Green,
+        Accent::Amber,
+        Accent::Orange,
+        Accent::Rose,
+        Accent::Violet,
+        Accent::Slate,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Accent::Preset => "Theme",
+            Accent::Blue => "Blue",
+            Accent::Teal => "Teal",
+            Accent::Green => "Green",
+            Accent::Amber => "Amber",
+            Accent::Orange => "Orange",
+            Accent::Rose => "Rose",
+            Accent::Violet => "Violet",
+            Accent::Slate => "Slate",
+        }
+    }
+
+    pub fn colour(self, preset: Named) -> Color {
+        match self {
+            Accent::Preset => preset.palette().accent,
+            Accent::Blue => rgb(96, 165, 250),
+            Accent::Teal => rgb(45, 212, 191),
+            Accent::Green => rgb(74, 222, 128),
+            Accent::Amber => rgb(251, 191, 36),
+            Accent::Orange => rgb(251, 146, 60),
+            Accent::Rose => rgb(244, 114, 182),
+            Accent::Violet => rgb(167, 139, 250),
+            Accent::Slate => rgb(148, 163, 184),
+        }
+    }
+}
+
+/// The palette for a preset with an accent override applied.
+pub fn resolve(named: Named, accent: Accent) -> Palette {
+    let mut palette = named.palette();
+    palette.accent = accent.colour(named);
+    // Dark text on bright accents, light text on dark ones, so the Apply
+    // button stays readable whatever is chosen.
+    let luminance = 0.299 * palette.accent.r + 0.587 * palette.accent.g + 0.114 * palette.accent.b;
+    palette.on_accent = if luminance > 0.6 {
+        rgb(16, 18, 22)
+    } else {
+        rgb(255, 255, 255)
+    };
+    palette
 }
