@@ -82,6 +82,7 @@ pub enum Message {
     Apply,
     Device(worker::Update),
     Lighting(pages::lighting::Message),
+    Sensor(pages::sensor::Message),
     About(pages::about::Message),
     Tick,
 }
@@ -98,6 +99,7 @@ pub struct Castty {
     worker: worker::Handle,
     art: Rc<art::Art>,
     lighting: pages::lighting::State,
+    sensor: pages::sensor::State,
     started: Instant,
 }
 
@@ -107,9 +109,11 @@ impl Castty {
         worker.send(worker::Job::Connect);
         let profiles = config::load_all();
         let lighting = pages::lighting::State::from_profile(&profiles[0]);
+        let sensor = pages::sensor::State::from_profile(&profiles[0]);
         (
             Castty {
                 lighting,
+                sensor,
                 art: Rc::new(art::Art::load()),
                 started: Instant::now(),
                 profiles,
@@ -136,11 +140,26 @@ impl Castty {
                 if index < self.profiles.len() {
                     self.current = index;
                     self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
+                    self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
                 }
             }
             Message::Lighting(message) => {
                 self.lighting.update(message);
                 self.dirty = true;
+            }
+            Message::Sensor(message) => {
+                let wants_device = self.sensor.update(message);
+                self.dirty = true;
+                if wants_device {
+                    // Starting sends the start command; the end of the window
+                    // asks for the result.
+                    let job = if self.sensor.measuring() {
+                        worker::Job::SurfaceStart
+                    } else {
+                        worker::Job::SurfaceResult
+                    };
+                    self.worker.send(job);
+                }
             }
             Message::About(pages::about::Message::ThemeChanged(named)) => {
                 self.settings.theme = named;
@@ -158,6 +177,7 @@ impl Castty {
             }
             Message::Apply => {
                 self.lighting.apply_to(&mut self.profiles[self.current]);
+                self.sensor.apply_to(&mut self.profiles[self.current]);
                 let profile = self.profiles[self.current].clone();
                 self.worker.send(worker::Job::WriteProfile(Box::new(profile)));
                 self.dirty = false;
@@ -173,6 +193,7 @@ impl Castty {
                     self.status = "Saved to the mouse".into();
                 }
                 worker::Update::Surface(value) => {
+                    self.sensor.update(pages::sensor::Message::SurfaceResult(value));
                     self.status = format!(
                         "Surface quality {}/10",
                         crate::hardware::surface_score(value)
@@ -185,14 +206,19 @@ impl Castty {
 
     fn subscription(&self) -> Subscription<Message> {
         let device = worker::subscription().map(Message::Device);
+        let mut subs = vec![device];
         if self.page.hero() != Hero::None && self.lighting.animated() {
-            Subscription::batch([
-                device,
+            subs.push(
                 iced::time::every(std::time::Duration::from_millis(33)).map(|_| Message::Tick),
-            ])
-        } else {
-            device
+            );
         }
+        if self.sensor.measuring() {
+            subs.push(
+                iced::time::every(std::time::Duration::from_secs(1))
+                    .map(|_| Message::Sensor(pages::sensor::Message::Tick)),
+            );
+        }
+        Subscription::batch(subs)
     }
 
     fn tab_bar(&self, palette: &Palette) -> Element<'_, Message> {
@@ -267,6 +293,7 @@ impl Castty {
 
         let content: Element<'_, Message> = match self.page {
             Page::Lighting => pages::lighting::view(&self.lighting, &palette).map(Message::Lighting),
+            Page::Sensor => pages::sensor::view(&self.sensor, &palette).map(Message::Sensor),
             Page::About => {
                 pages::about::view(self.settings.theme, self.settings.accent, &palette)
                     .map(Message::About)

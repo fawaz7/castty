@@ -3,3 +3,4 @@
 
 pub mod about;
 pub mod lighting;
+pub mod sensor;
