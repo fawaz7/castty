@@ -227,7 +227,18 @@ impl MousePreview {
             let state = state.clone();
             let cache = cache.clone();
             let show_buttons = show_buttons.clone();
-            widget.set_draw_func(move |_, cr, _, _| {
+            widget.set_draw_func(move |_, cr, width, height| {
+                // Fit the artwork into whatever we were actually allocated and
+                // draw in image coordinates, so the button callouts and the
+                // image can never disagree about where anything is.
+                let scale = (f64::from(width) / f64::from(PREVIEW_W))
+                    .min(f64::from(height) / f64::from(PREVIEW_H));
+                let ox = (f64::from(width) - f64::from(PREVIEW_W) * scale) / 2.0;
+                let oy = (f64::from(height) - f64::from(PREVIEW_H) * scale) / 2.0;
+                let _ = cr.save();
+                cr.translate(ox, oy);
+                cr.scale(scale, scale);
+
                 let s = state.get();
                 let t = start.elapsed().as_secs_f64();
                 let (brightness, hue) = animate(s.mode, t);
@@ -263,6 +274,7 @@ impl MousePreview {
                 if show_buttons.get() {
                     draw_button_marks(cr);
                 }
+                let _ = cr.restore();
             });
         }
 
@@ -310,6 +322,9 @@ fn draw_button_marks(cr: &gtk::cairo::Context) {
     for (i, (fx, fy)) in BUTTON_MARKS.iter().enumerate() {
         let (x, y) = (fx * PREVIEW_W as f64, fy * PREVIEW_H as f64);
 
+        // show_text leaves a current point; without clearing it the next arc is
+        // joined to the previous badge by a stray line.
+        cr.new_path();
         cr.arc(x, y, R, 0.0, std::f64::consts::TAU);
         cr.set_source_rgba(0.09, 0.09, 0.11, 0.92);
         let _ = cr.fill_preserve();
@@ -323,6 +338,7 @@ fn draw_button_marks(cr: &gtk::cairo::Context) {
             cr.set_source_rgb(1.0, 1.0, 1.0);
             let _ = cr.show_text(&label);
         }
+        cr.new_path();
     }
 }
 
