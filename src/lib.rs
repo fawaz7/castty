@@ -6,4 +6,5 @@
 
 pub mod config;
 pub mod hardware;
+pub mod macros;
 pub mod ui;

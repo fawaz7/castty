@@ -1,11 +1,10 @@
-//! Recording and editing a macro.
+//! Recording and editing a named macro.
 //!
-//! Storage is one small shared area -- 32 event slots for the whole profile,
-//! and every macro also costs one slot for its terminator -- so the editor
-//! shows what is left and refuses to record past it. Overflowing would corrupt
-//! the profile rather than fail cleanly.
+//! Mirrors the vendor flow: name it, choose how timing is captured, record,
+//! stop. Assigning it to a button happens on the buttons page.
 
-use crate::hardware::{keycode, Macro, MacroEvent};
+use crate::hardware::{keycode, MacroEvent};
+use crate::macros::{NamedMacro, Timing};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::glib::translate::IntoGlib;
@@ -19,24 +18,23 @@ use std::time::Instant;
 
 struct State {
     events: Vec<MacroEvent>,
-    hold: bool,
+    timing: Timing,
     recording: bool,
     last: Option<Instant>,
     /// Keys physically down, so auto-repeat does not record duplicates.
     held: HashSet<u8>,
 }
 
-/// Open the editor. `slots_free` is the capacity available to *this* macro,
-/// i.e. the profile's free slots plus whatever the existing macro occupies.
-pub fn open<F: Fn(Option<Macro>) + 'static>(
+/// Open the editor for a new or existing macro. `on_done` receives the result,
+/// or `None` if cancelled.
+pub fn open<F: Fn(Option<NamedMacro>) + 'static>(
     parent: &gtk::Window,
-    existing: Option<Macro>,
-    slots_free: usize,
+    existing: Option<NamedMacro>,
     on_done: F,
 ) {
     let state = Rc::new(RefCell::new(State {
         events: existing.as_ref().map(|m| m.events.clone()).unwrap_or_default(),
-        hold: existing.as_ref().is_some_and(|m| m.hold),
+        timing: existing.as_ref().map_or(Timing::Delay, |m| m.timing),
         recording: false,
         last: None,
         held: HashSet::new(),
@@ -45,9 +43,9 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
     let window = adw::Window::builder()
         .transient_for(parent)
         .modal(true)
-        .title("Macro")
-        .default_width(460)
-        .default_height(520)
+        .title(if existing.is_some() { "Edit macro" } else { "New macro" })
+        .default_width(480)
+        .default_height(560)
         .build();
 
     let header = adw::HeaderBar::new();
@@ -57,22 +55,34 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
     header.pack_start(&cancel);
     header.pack_end(&save);
 
-    let hold_row = adw::SwitchRow::builder()
-        .title("Hold mode")
-        .subtitle("Keys stay down while the button is held, instead of replaying with timing")
-        .active(state.borrow().hold)
+    let name = adw::EntryRow::builder().title("Name").build();
+    name.set_text(&existing.as_ref().map(|m| m.name.clone()).unwrap_or_default());
+
+    let timing_row = adw::ComboRow::builder()
+        .title("Timing")
+        .model(&gtk::StringList::new(
+            &Timing::ALL.iter().map(|t| t.label()).collect::<Vec<_>>(),
+        ))
         .build();
+    timing_row.set_selected(
+        Timing::ALL
+            .iter()
+            .position(|t| *t == state.borrow().timing)
+            .unwrap_or(0) as u32,
+    );
+
+    let settings = adw::PreferencesGroup::new();
+    settings.add(&name);
+    settings.add(&timing_row);
 
     let record = gtk::ToggleButton::with_label("Record");
     record.add_css_class("destructive-action");
-    let clear = gtk::Button::with_label("Clear");
-    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    buttons.set_halign(gtk::Align::Center);
-    buttons.append(&record);
-    buttons.append(&clear);
-
-    let capacity = gtk::Label::new(None);
-    capacity.add_css_class("dim-label");
+    let status = gtk::Label::new(Some("Not recording"));
+    status.add_css_class("dim-label");
+    let controls = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    controls.set_halign(gtk::Align::Center);
+    controls.append(&record);
+    controls.append(&status);
 
     let list = gtk::ListBox::new();
     list.add_css_class("boxed-list");
@@ -83,17 +93,13 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
         .child(&list)
         .build();
 
-    let group = adw::PreferencesGroup::new();
-    group.add(&hold_row);
-
     let body = gtk::Box::new(gtk::Orientation::Vertical, 12);
     body.set_margin_top(12);
     body.set_margin_bottom(12);
     body.set_margin_start(12);
     body.set_margin_end(12);
-    body.append(&group);
-    body.append(&buttons);
-    body.append(&capacity);
+    body.append(&settings);
+    body.append(&controls);
     body.append(&scroller);
 
     let view = adw::ToolbarView::new();
@@ -101,46 +107,43 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
     view.set_content(Some(&body));
     window.set_content(Some(&view));
 
-    // Redraw the event list and capacity readout from state.
     let refresh: Rc<dyn Fn()> = {
         let state = state.clone();
         let list = list.clone();
-        let capacity = capacity.clone();
-        let save = save.clone();
+        let status = status.clone();
         Rc::new(move || {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
             let s = state.borrow();
             for event in &s.events {
-                let action = if event.pressed { "press" } else { "release" };
                 let row = adw::ActionRow::builder()
-                    .title(format!("{} {}", keycode::label(event.key), action))
+                    .title(format!(
+                        "{} {}",
+                        keycode::label(event.key),
+                        if event.pressed { "down" } else { "up" }
+                    ))
                     .build();
-                if !s.hold {
+                if s.timing == Timing::Delay {
                     row.set_subtitle(&format!("{} ms", event.delay_ms));
                 }
                 list.append(&row);
             }
-            let used = s.events.len() + usize::from(!s.events.is_empty());
-            let over = used > slots_free;
-            capacity.set_label(&format!(
-                "{} of {} slots used{}",
-                used,
-                slots_free,
-                if over { " — too many to save" } else { "" }
-            ));
-            save.set_sensitive(!over);
+            status.set_label(&if s.recording {
+                format!("Recording — {} events", s.events.len())
+            } else if s.events.is_empty() {
+                "Not recording".to_string()
+            } else {
+                format!("{} events", s.events.len())
+            });
         })
     };
     refresh();
 
-    // Key capture while recording.
     let keys = gtk::EventControllerKey::new();
     {
         let state = state.clone();
         let refresh = refresh.clone();
-        let slots = slots_free;
         keys.connect_key_pressed(move |_, key, _, _| {
             let mut s = state.borrow_mut();
             if !s.recording {
@@ -149,18 +152,14 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
             let Some(usage) = keycode::from_keyval(key.into_glib()) else {
                 return glib::Propagation::Stop;
             };
-            // Auto-repeat fires repeatedly while a key is down; record once.
+            // Auto-repeat fires while a key is down; record the press once.
             if !s.held.insert(usage) {
                 return glib::Propagation::Stop;
             }
-            if s.events.len() + 2 > slots {
-                return glib::Propagation::Stop;
-            }
             let now = Instant::now();
-            let delay = if s.hold {
-                0
-            } else {
-                s.last.map_or(0, |t| now.duration_since(t).as_millis() as u32)
+            let delay = match s.timing {
+                Timing::Delay => s.last.map_or(0, |t| now.duration_since(t).as_millis() as u32),
+                _ => 0,
             };
             s.last = Some(now);
             s.events.push(MacroEvent { key: usage, pressed: true, delay_ms: delay });
@@ -181,13 +180,16 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
                 return;
             };
             s.held.remove(&usage);
-            // Hold macros store only presses; the release happens when the
+            // Hold macros store presses only; the key is released when the
             // mouse button is let go.
-            if s.hold {
+            if s.timing == Timing::Hold {
                 return;
             }
             let now = Instant::now();
-            let delay = s.last.map_or(0, |t| now.duration_since(t).as_millis() as u32);
+            let delay = match s.timing {
+                Timing::Delay => s.last.map_or(0, |t| now.duration_since(t).as_millis() as u32),
+                _ => 0,
+            };
             s.last = Some(now);
             s.events.push(MacroEvent { key: usage, pressed: false, delay_ms: delay });
             drop(s);
@@ -215,27 +217,21 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
         }
     });
 
-    clear.connect_clicked({
-        let state = state.clone();
-        let refresh = refresh.clone();
-        move |_| {
-            let mut s = state.borrow_mut();
-            s.events.clear();
-            s.last = None;
-            drop(s);
-            refresh();
-        }
-    });
-
-    hold_row.connect_active_notify({
+    timing_row.connect_selected_notify({
         let state = state.clone();
         let refresh = refresh.clone();
         move |row| {
             let mut s = state.borrow_mut();
-            s.hold = row.is_active();
-            // The two modes store different things, so a recording made in one
-            // is not valid in the other.
-            s.events.clear();
+            let new = Timing::ALL
+                .get(row.selected() as usize)
+                .copied()
+                .unwrap_or_default();
+            // Hold records something structurally different, so a recording
+            // made in one mode is not valid in the other.
+            if (s.timing == Timing::Hold) != (new == Timing::Hold) {
+                s.events.clear();
+            }
+            s.timing = new;
             drop(s);
             refresh();
         }
@@ -249,15 +245,23 @@ pub fn open<F: Fn(Option<Macro>) + 'static>(
     save.connect_clicked({
         let state = state.clone();
         let window = window.clone();
+        let name = name.clone();
         move |_| {
             let s = state.borrow();
-            let result = if s.events.is_empty() {
-                None
-            } else {
-                Some(Macro { events: s.events.clone(), hold: s.hold })
+            let text = name.text().trim().to_string();
+            if text.is_empty() || s.events.is_empty() {
+                // A macro with no name or no events cannot be referred to or
+                // played back; say so rather than storing something useless.
+                name.add_css_class("error");
+                return;
+            }
+            let result = NamedMacro {
+                name: text,
+                timing: s.timing,
+                events: s.events.clone(),
             };
             drop(s);
-            on_done(result);
+            on_done(Some(result));
             window.close();
         }
     });

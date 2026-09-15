@@ -1,11 +1,14 @@
 //! Button assignment page.
 //!
-//! The six entries are a fixed order in the profile blob. Assignments we can
-//! express are offered as a list; anything captured that we cannot yet build
-//! (a macro, an unrecognised type) is preserved and shown as the current value
-//! rather than being silently replaced.
+//! The six entries are a fixed order in the profile blob. Standard assignments
+//! are offered directly; macros go through a picker so the function list does
+//! not grow with the library. Anything captured that we cannot build (an
+//! unrecognised type) is preserved and shown as the current value rather than
+//! being silently replaced.
 
+use super::macro_picker;
 use crate::hardware::{keycode, ButtonAction, Profile, BUTTONS};
+use crate::macros::{Library, Timing};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::glib::translate::IntoGlib;
@@ -15,7 +18,7 @@ use adw::prelude::*;
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-/// Assignments the UI can construct, in dropdown order.
+/// Assignments the UI can construct directly, in dropdown order.
 const CHOICES: [(&str, ButtonAction); 10] = [
     ("Left click", ButtonAction::Mouse(0x01)),
     ("Right click", ButtonAction::Mouse(0x02)),
@@ -29,19 +32,21 @@ const CHOICES: [(&str, ButtonAction); 10] = [
     ("Disabled", ButtonAction::Disabled),
 ];
 
-/// Sentinel row that opens the key-capture dialog instead of assigning. It is
-/// always the last entry, so a key can be reassigned as often as you like.
-/// Macros are recorded on their own page, not here.
+/// Sentinel rows that open a dialog rather than assigning. Always last, so a
+/// binding can be changed as often as you like.
+const ASSIGN_MACRO: &str = "Macro\u{2026}";
 const ASSIGN_KEY: &str = "Set a key\u{2026}";
 
 /// How an action outside `CHOICES` is described back to the user.
-fn describe(action: ButtonAction) -> Option<String> {
+fn describe(action: ButtonAction, macro_name: Option<&str>) -> Option<String> {
     match action {
         ButtonAction::Key(code) => Some(format!("Key: {}", keycode::label(code))),
-        ButtonAction::Macro { events, hold: true, .. } => {
-            Some(format!("Macro, hold ({events} events)"))
-        }
-        ButtonAction::Macro { events, .. } => Some(format!("Macro ({events} events)")),
+        ButtonAction::Macro { events, .. } => Some(match macro_name {
+            Some(name) => format!("Macro: {name}"),
+            // On the device a macro is just events; if none in the library
+            // matches, say so rather than naming it wrongly.
+            None => format!("Macro, not in library ({events} events)"),
+        }),
         ButtonAction::Unknown(kind, param) => {
             Some(format!("Unrecognised (0x{kind:02x} 0x{param:02x})"))
         }
@@ -49,18 +54,18 @@ fn describe(action: ButtonAction) -> Option<String> {
     }
 }
 
-/// The dropdown for one row: the fixed choices, the current value when it is
-/// not one of them, and always the "set a key" action last.
-fn build_model(extra: Option<&str>) -> (gtk::StringList, Option<u32>, u32) {
+/// The dropdown for one row: fixed choices, the current value when it is none
+/// of them, then the two dialog actions.
+fn build_model(extra: Option<&str>) -> (gtk::StringList, Option<u32>) {
     let mut labels: Vec<String> = CHOICES.iter().map(|(n, _)| (*n).to_string()).collect();
     let extra_index = extra.map(|text| {
         labels.push(text.to_string());
         labels.len() as u32 - 1
     });
+    labels.push(ASSIGN_MACRO.to_string());
     labels.push(ASSIGN_KEY.to_string());
-    let assign_index = labels.len() as u32 - 1;
     let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-    (gtk::StringList::new(&refs), extra_index, assign_index)
+    (gtk::StringList::new(&refs), extra_index)
 }
 
 /// Modal that waits for a keypress and reports its HID usage code.
@@ -98,8 +103,6 @@ fn capture_key<F: Fn(u8) + 'static>(parent: &gtk::Window, on_key: F) {
                     on_key(usage);
                     dialog.close();
                 }
-                // Modifiers and anything the device has no code for: say so
-                // rather than storing something meaningless.
                 None => label.set_label("That key can't be assigned.\nTry another, or Escape."),
             }
             glib::Propagation::Stop
@@ -114,9 +117,11 @@ pub struct ButtonsPage {
     rows: Vec<adw::ComboRow>,
     /// Current action per row when it is not one of `CHOICES`.
     extra: Rc<RefCell<Vec<Option<ButtonAction>>>>,
-    /// Selection to fall back to when the capture dialog is cancelled.
+    /// Library macro assigned to each row, by name.
+    chosen: Rc<RefCell<Vec<Option<String>>>>,
+    /// Selection to fall back to when a dialog is cancelled.
     previous: Rc<RefCell<Vec<u32>>>,
-    /// Set while `load` populates, so it does not fire user-change logic.
+    /// Set while populating, so it does not fire user-change logic.
     loading: Rc<Cell<bool>>,
 }
 
@@ -156,90 +161,133 @@ impl ButtonsPage {
             widget: page,
             rows,
             extra: Rc::new(RefCell::new(vec![None; count])),
+            chosen: Rc::new(RefCell::new(vec![None; count])),
             previous: Rc::new(RefCell::new(vec![0; count])),
             loading: Rc::new(Cell::new(false)),
         }
     }
 
-    /// Wire the "set a key" entry. Needs the window to parent the dialog.
-    pub fn connect_key_assignment<F: Fn() + Clone + 'static>(
-        &self,
+    /// Re-select a row, showing `extra` as its current value.
+    fn show(&self, index: usize, extra: Option<&str>) {
+        let (model, extra_index) = build_model(extra);
+        self.loading.set(true);
+        self.rows[index].set_model(Some(&model));
+        let selected = extra_index.unwrap_or(0);
+        self.rows[index].set_selected(selected);
+        self.previous.borrow_mut()[index] = selected;
+        self.loading.set(false);
+    }
+
+    /// Wire both dialogs. `library` is read when the picker opens, so macros
+    /// recorded after this call are still offered.
+    pub fn connect_dialogs<F: Fn() + Clone + 'static>(
+        self: &Rc<Self>,
         window: &gtk::Window,
+        library: Rc<RefCell<Library>>,
         changed: F,
     ) {
-        for (i, row) in self.rows.iter().enumerate() {
+        for i in 0..self.rows.len() {
+            let me = self.clone();
             let window = window.clone();
-            let extra = self.extra.clone();
-            let previous = self.previous.clone();
-            let loading = self.loading.clone();
+            let library = library.clone();
             let changed = changed.clone();
-            row.connect_selected_notify(move |r| {
-                if loading.get() {
+            self.rows[i].connect_selected_notify(move |r| {
+                if me.loading.get() {
                     return;
                 }
                 let Some(list) = r.model().and_downcast::<gtk::StringList>() else {
                     return;
                 };
-                if list.string(r.selected()).as_deref() != Some(ASSIGN_KEY) {
-                    // An ordinary choice: remember it as the fallback.
-                    previous.borrow_mut()[i] = r.selected();
-                    return;
-                }
+                let label = list.string(r.selected()).map(|s| s.to_string());
+                match label.as_deref() {
+                    Some(ASSIGN_MACRO) => {
+                        // Sentinels are actions, not values: restore first.
+                        let fallback = me.previous.borrow()[i];
+                        me.loading.set(true);
+                        r.set_selected(fallback);
+                        me.loading.set(false);
 
-                // Clones for the dialog callback; the originals stay available
-                // for the cancel path below.
-                let dlg_extra = extra.clone();
-                let dlg_previous = previous.clone();
-                let dlg_loading = loading.clone();
-                let changed = changed.clone();
-                let row = r.clone();
-                capture_key(&window, move |usage| {
-                    let action = ButtonAction::Key(usage);
-                    dlg_extra.borrow_mut()[i] = Some(action);
-                    let text = describe(action).unwrap_or_default();
-                    let (model, extra_index, _) = build_model(Some(&text));
-                    dlg_loading.set(true);
-                    row.set_model(Some(&model));
-                    let selected = extra_index.unwrap_or(0);
-                    row.set_selected(selected);
-                    dlg_previous.borrow_mut()[i] = selected;
-                    dlg_loading.set(false);
-                    changed();
-                });
-
-                // Cancelling leaves the sentinel selected, which is not an
-                // assignment; restore whatever was chosen before.
-                let fallback = previous.borrow()[i];
-                {
-                    let loading_guard = loading.clone();
-                    let row = r.clone();
-                    glib::idle_add_local_once(move || {
-                        if let Some(list) = row.model().and_downcast::<gtk::StringList>() {
-                            if list.string(row.selected()).as_deref() == Some(ASSIGN_KEY) {
-                                loading_guard.set(true);
-                                row.set_selected(fallback);
-                                loading_guard.set(false);
+                        let names: Vec<String> =
+                            library.borrow().macros.iter().map(|m| m.name.clone()).collect();
+                        let current = me.chosen.borrow()[i].clone();
+                        let me2 = me.clone();
+                        let changed = changed.clone();
+                        macro_picker::open(&window, names, current, move |picked| {
+                            match picked {
+                                Some(name) => {
+                                    me2.extra.borrow_mut()[i] = None;
+                                    me2.show(i, Some(&format!("Macro: {name}")));
+                                    me2.chosen.borrow_mut()[i] = Some(name);
+                                }
+                                None => {
+                                    me2.chosen.borrow_mut()[i] = None;
+                                    me2.extra.borrow_mut()[i] = None;
+                                    me2.show(i, None);
+                                }
                             }
-                        }
-                    });
+                            changed();
+                        });
+                    }
+                    Some(ASSIGN_KEY) => {
+                        let fallback = me.previous.borrow()[i];
+                        me.loading.set(true);
+                        r.set_selected(fallback);
+                        me.loading.set(false);
+
+                        let me2 = me.clone();
+                        let changed = changed.clone();
+                        capture_key(&window, move |usage| {
+                            me2.chosen.borrow_mut()[i] = None;
+                            me2.extra.borrow_mut()[i] = Some(ButtonAction::Key(usage));
+                            me2.show(i, Some(&format!("Key: {}", keycode::label(usage))));
+                            changed();
+                        });
+                    }
+                    _ => {
+                        // An ordinary choice replaces whatever was there.
+                        me.previous.borrow_mut()[i] = r.selected();
+                        me.chosen.borrow_mut()[i] = None;
+                        changed();
+                    }
                 }
             });
         }
     }
 
-    pub fn load(&self, profile: &Profile) {
+    pub fn load(&self, profile: &Profile, library: &Library) {
         self.loading.set(true);
         {
             let mut extra = self.extra.borrow_mut();
+            let mut chosen = self.chosen.borrow_mut();
             let mut previous = self.previous.borrow_mut();
             for (i, row) in self.rows.iter().enumerate() {
                 let action = profile.buttons[i];
-                let text = describe(action);
-                extra[i] = text.as_ref().map(|_| action);
 
-                let (model, extra_index, _) = build_model(text.as_deref());
+                // A macro on the device is only an event list, so recognise it
+                // by matching those events against the library.
+                let name = match action {
+                    ButtonAction::Macro { hold, .. } => {
+                        let events = profile.macro_events(action);
+                        library
+                            .macros
+                            .iter()
+                            .find(|m| {
+                                m.events == events && (m.timing == Timing::Hold) == hold
+                            })
+                            .map(|m| m.name.clone())
+                    }
+                    _ => None,
+                };
+                chosen[i] = name.clone();
+
+                let text = describe(action, name.as_deref());
+                extra[i] = match action {
+                    ButtonAction::Macro { .. } => None,
+                    _ => text.as_ref().map(|_| action),
+                };
+
+                let (model, extra_index) = build_model(text.as_deref());
                 row.set_model(Some(&model));
-
                 let index = match extra_index {
                     Some(idx) => idx,
                     None => CHOICES
@@ -254,30 +302,52 @@ impl ButtonsPage {
         self.loading.set(false);
     }
 
+    /// Which library macro each button is set to. Resolving these into device
+    /// storage is the window's job, because macros share one area.
+    pub fn macro_assignments(&self) -> [Option<String>; BUTTONS.len()] {
+        let chosen = self.chosen.borrow();
+        std::array::from_fn(|i| chosen[i].clone())
+    }
+
+    /// Drop assignments naming a macro that is no longer in the library, and
+    /// report how many were cleared. Deleting a macro must not leave a button
+    /// pointing at something that cannot be resolved.
+    pub fn prune_missing(&self, library: &Library) -> usize {
+        // Collect first: `show` needs the borrow released.
+        let stale: Vec<usize> = self
+            .chosen
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(_, slot)| {
+                slot.as_deref()
+                    .is_some_and(|name| library.find(name).is_none())
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        for &i in &stale {
+            self.chosen.borrow_mut()[i] = None;
+            self.show(i, None);
+        }
+        stale.len()
+    }
+
+    /// Write the non-macro assignments; macro rows are left to the caller.
     pub fn store(&self, profile: &mut Profile) {
         let extra = self.extra.borrow();
+        let chosen = self.chosen.borrow();
         for (i, row) in self.rows.iter().enumerate() {
+            if chosen[i].is_some() {
+                continue;
+            }
             let index = row.selected() as usize;
             profile.buttons[i] = match CHOICES.get(index) {
                 Some((_, action)) => *action,
-                // Past the fixed choices: either a captured key or a value we
-                // preserved because we cannot build it. Never the sentinel,
-                // which is restored to the previous selection on cancel.
+                // Past the fixed choices: a captured key, or a value preserved
+                // because we cannot build it.
                 None => extra[i].unwrap_or(profile.buttons[i]),
             };
-        }
-    }
-
-    pub fn connect_changed<F: Fn() + Clone + 'static>(&self, f: F) {
-        let loading = self.loading.clone();
-        for row in &self.rows {
-            let g = f.clone();
-            let loading = loading.clone();
-            row.connect_selected_notify(move |_| {
-                if !loading.get() {
-                    g();
-                }
-            });
         }
     }
 }

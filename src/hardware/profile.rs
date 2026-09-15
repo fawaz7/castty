@@ -266,7 +266,7 @@ impl Button {
 
 /// One step of a macro. Each keypress records as two events, a press and a
 /// release, matching how the vendor editor captures them.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct MacroEvent {
     /// HID usage code of the key.
     pub key: u8,
@@ -308,7 +308,7 @@ impl MacroEvent {
 }
 
 /// A recorded macro, as the UI deals with it.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Macro {
     pub events: Vec<MacroEvent>,
     /// Hold the keys down while the button is held, instead of replaying.

@@ -8,6 +8,7 @@ use super::mouse_preview::MousePreview;
 use super::profiles_page::ProfilesPage;
 use super::worker::{Job, Update, Worker};
 use crate::config::{self, PROFILE_COUNT};
+use crate::macros::Library;
 use crate::hardware::Profile;
 use gtk4 as gtk;
 use gtk::glib;
@@ -62,11 +63,14 @@ fn profile_labels(profiles: &[Profile]) -> Vec<String> {
 
 fn build(app: &adw::Application) {
     let profiles = Rc::new(RefCell::new(config::load_all()));
+    let library = Rc::new(RefCell::new(Library::load()));
     let current = Rc::new(Cell::new(0usize));
     // Set while pushing state into the widgets. Loading a profile fires the
     // same "changed" signals a user edit does, and those handlers write back to
     // `profiles` -- without this guard that re-entrancy panics on the RefCell.
     let loading = Rc::new(Cell::new(false));
+    // Set when a macro assignment does not fit, so Apply can report it.
+    let capacity_error: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
     let (worker, updates) = Worker::spawn();
 
     let window = adw::ApplicationWindow::builder()
@@ -109,7 +113,7 @@ fn build(app: &adw::Application) {
     let led_page = Rc::new(LedPage::new());
     let dpi_page = Rc::new(DpiPage::new());
     let buttons_page = Rc::new(ButtonsPage::new());
-    let macros_page = Rc::new(MacrosPage::new());
+    let macros_page = MacrosPage::new(library.clone());
     let profiles_page = Rc::new(ProfilesPage::new());
 
     let stack = adw::ViewStack::new();
@@ -183,9 +187,9 @@ fn build(app: &adw::Application) {
         let led_page = led_page.clone();
         let dpi_page = dpi_page.clone();
         let buttons_page = buttons_page.clone();
-        let macros_page = macros_page.clone();
         let profiles_page = profiles_page.clone();
         let preview = preview.clone();
+        let library = library.clone();
         let loading = loading.clone();
         Rc::new(move || {
             loading.set(true);
@@ -195,8 +199,7 @@ fn build(app: &adw::Application) {
             let p = &snapshot[current.get()];
             led_page.load(p);
             dpi_page.load(p);
-            buttons_page.load(p);
-            macros_page.load(p);
+            buttons_page.load(p, &library.borrow());
             profiles_page.load(&snapshot);
             preview.set_state(led_page.preview_state());
             loading.set(false);
@@ -213,6 +216,8 @@ fn build(app: &adw::Application) {
         let buttons_page = buttons_page.clone();
         let profiles_page = profiles_page.clone();
         let loading = loading.clone();
+        let library = library.clone();
+        let capacity_error = capacity_error.clone();
         Rc::new(move || {
             if loading.get() {
                 return;
@@ -223,6 +228,21 @@ fn build(app: &adw::Application) {
             dpi_page.store(&mut all[index]);
             buttons_page.store(&mut all[index]);
             profiles_page.store(&mut all);
+
+            // Macros share one storage area, so every button's assignment has
+            // to be resolved and packed together.
+            let lib = library.borrow();
+            let assigned = buttons_page.macro_assignments();
+            let mut macros: [Option<crate::hardware::Macro>; 6] = Default::default();
+            for (i, name) in assigned.iter().enumerate() {
+                macros[i] = name
+                    .as_deref()
+                    .and_then(|n| lib.find(n))
+                    .map(|m| m.to_device());
+            }
+            if let Err(e) = all[index].set_macros(&macros) {
+                capacity_error.replace(Some(e.to_string()));
+            }
             all[index].index = index as u8;
         })
     };
@@ -242,52 +262,37 @@ fn build(app: &adw::Application) {
     };
     // The key-capture dialog needs a parent window, so wire it once the window
     // exists rather than inside the page's constructor.
-    buttons_page.connect_key_assignment(window.upcast_ref::<gtk::Window>(), mark_dirty.clone());
-
-    macros_page.connect_editing(
+    buttons_page.connect_dialogs(
         window.upcast_ref::<gtk::Window>(),
-        {
-            let profiles = profiles.clone();
-            let current = current.clone();
-            move |i| {
-                let all = profiles.borrow();
-                let p = &all[current.get()];
-                let existing = p.macros()[i].clone();
-                // This macro may reuse whatever it already occupies.
-                let own = existing.as_ref().map_or(0, |m| m.events.len() + 1);
-                (existing, p.macro_slots_free() + own)
-            }
-        },
-        {
-            let profiles = profiles.clone();
-            let current = current.clone();
-            let collect = collect.clone();
-            let refresh = refresh.clone();
-            let apply = apply.clone();
-            let toasts = toasts.clone();
-            move |i, result| {
-                // Keep edits made on other rows before rewriting the profile.
-                collect();
-                let outcome = {
-                    let mut all = profiles.borrow_mut();
-                    let index = current.get();
-                    let mut macros = all[index].macros();
-                    macros[i] = result;
-                    all[index].set_macros(&macros)
-                };
-                if let Err(e) = outcome {
-                    toasts.add_toast(adw::Toast::new(&e.to_string()));
-                    return;
-                }
-                refresh();
+        library.clone(),
+        mark_dirty.clone(),
+    );
+
+    macros_page.set_window(window.upcast_ref::<gtk::Window>());
+    macros_page.refresh();
+    macros_page.connect_changed({
+        let refresh = refresh.clone();
+        let buttons_page = buttons_page.clone();
+        let library = library.clone();
+        let toasts = toasts.clone();
+        let apply = apply.clone();
+        move || {
+            // A deleted macro must not leave a button pointing at a name that
+            // no longer resolves.
+            let cleared = buttons_page.prune_missing(&library.borrow());
+            if cleared > 0 {
+                toasts.add_toast(adw::Toast::new(&format!(
+                    "Unassigned from {cleared} button{}",
+                    if cleared == 1 { "" } else { "s" }
+                )));
                 apply.set_sensitive(true);
             }
-        },
-    );
+            refresh();
+        }
+    });
 
     led_page.connect_changed(mark_dirty.clone());
     dpi_page.connect_changed(mark_dirty.clone());
-    buttons_page.connect_changed(mark_dirty.clone());
     profiles_page.connect_changed({
         let apply = apply.clone();
         let selector = selector.clone();
@@ -364,8 +369,14 @@ fn build(app: &adw::Application) {
         let collect = collect.clone();
         let worker = worker.clone();
         let apply_btn = apply.clone();
+        let capacity_error = capacity_error.clone();
+        let toasts = toasts.clone();
         move |_| {
             collect();
+            if let Some(message) = capacity_error.borrow_mut().take() {
+                toasts.add_toast(adw::Toast::new(&message));
+                return;
+            }
             let index = current.get();
             let profile = profiles.borrow()[index].clone();
             worker.send(Job::WriteProfile(Box::new(profile)));

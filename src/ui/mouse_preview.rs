@@ -245,6 +245,10 @@ impl MousePreview {
                 let wheel_rgb = apply_effect(s.wheel, brightness, hue);
                 let logo_rgb = apply_effect(s.logo, brightness, hue);
 
+                // Spill light onto the surround, coloured by the LEDs and
+                // following the effect's brightness. Off means no glow.
+                draw_glow(cr, wheel_rgb, logo_rgb);
+
                 if let Some(body) = &body {
                     cr.set_source_pixbuf(body, 0.0, 0.0);
                     let _ = cr.paint();
@@ -306,6 +310,33 @@ impl MousePreview {
         self.state.set(s);
         self.widget.queue_draw();
     }
+}
+
+/// A soft halo behind the mouse in the LED colour.
+///
+/// Brightness follows the lit colours, so an effect that dims also dims the
+/// glow, and LEDs that are off produce none at all.
+fn draw_glow(cr: &gtk::cairo::Context, wheel: (u8, u8, u8), logo: (u8, u8, u8)) {
+    let mix = |a: u8, b: u8| f64::from(a.max(b)) / 255.0;
+    let (r, g, b) = (
+        mix(wheel.0, logo.0),
+        mix(wheel.1, logo.1),
+        mix(wheel.2, logo.2),
+    );
+    let strength = r.max(g).max(b);
+    if strength <= 0.01 {
+        return;
+    }
+
+    let (w, h) = (f64::from(PREVIEW_W), f64::from(PREVIEW_H));
+    let (cx, cy) = (w * 0.5, h * 0.42);
+    let radius = w * 0.95;
+    let glow = gtk::cairo::RadialGradient::new(cx, cy, 0.0, cx, cy, radius);
+    glow.add_color_stop_rgba(0.0, r, g, b, 0.30 * strength);
+    glow.add_color_stop_rgba(0.55, r, g, b, 0.10 * strength);
+    glow.add_color_stop_rgba(1.0, r, g, b, 0.0);
+    let _ = cr.set_source(&glow);
+    let _ = cr.paint();
 }
 
 /// Numbered badges over each button, so the page's rows can be matched to the

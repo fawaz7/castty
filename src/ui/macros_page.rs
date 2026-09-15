@@ -1,144 +1,218 @@
-//! Macros page.
+//! Macro library.
 //!
-//! Macros belong to buttons -- the device has no separate macro library, each
-//! button entry points at its own event list -- so this page is organised by
-//! button. Recording one here also assigns it to that button.
-//!
-//! All macros in a profile share a single small storage area, so the capacity
-//! readout is part of the page rather than a detail of the editor.
+//! Macros are recorded and named here, then assigned to buttons on the buttons
+//! page. The device stores no macro names -- only a button's event list -- so
+//! the library lives in our own config.
 
 use super::macro_editor;
-use crate::hardware::{keycode, Macro, Profile, BUTTONS};
+use crate::hardware::keycode;
+use crate::macros::{Library, NamedMacro, Timing};
 use gtk4 as gtk;
 use gtk::prelude::*;
 use libadwaita as adw;
 use adw::prelude::*;
+use std::cell::RefCell;
 use std::rc::Rc;
 
 /// A short description of what a macro types.
-fn summarise(m: &Macro) -> String {
+fn summarise(m: &NamedMacro) -> String {
     let keys: Vec<String> = m
         .events
         .iter()
         .filter(|e| e.pressed)
         .map(|e| keycode::label(e.key))
         .collect();
-    let total: u32 = m.events.iter().map(|e| e.delay_ms).sum();
-
     let mut text = keys.join(" ");
-    if text.chars().count() > 40 {
-        text = format!("{}\u{2026}", text.chars().take(39).collect::<String>());
+    if text.chars().count() > 36 {
+        text = format!("{}\u{2026}", text.chars().take(35).collect::<String>());
     }
-    if m.hold {
-        format!("{text} — held while the button is down")
-    } else {
-        format!("{text} — {} events, {:.1} s", m.events.len(), total as f64 / 1000.0)
+    match m.timing {
+        Timing::Hold => format!("{text} — held while the button is down"),
+        Timing::Delay => {
+            let total: u32 = m.events.iter().map(|e| e.delay_ms).sum();
+            format!("{text} — {} events, {:.1} s", m.events.len(), total as f64 / 1000.0)
+        }
+        Timing::None => format!("{text} — {} events", m.events.len()),
     }
 }
+
+type Hook = Rc<RefCell<Option<Box<dyn Fn()>>>>;
 
 pub struct MacrosPage {
     pub widget: adw::PreferencesPage,
     group: adw::PreferencesGroup,
-    rows: Vec<adw::ActionRow>,
-    edit: Vec<gtk::Button>,
-    remove: Vec<gtk::Button>,
-}
-
-impl Default for MacrosPage {
-    fn default() -> Self {
-        Self::new()
-    }
+    rows: RefCell<Vec<adw::ActionRow>>,
+    library: Rc<RefCell<Library>>,
+    window: RefCell<Option<gtk::Window>>,
+    on_change: Hook,
 }
 
 impl MacrosPage {
-    pub fn new() -> Self {
+    pub fn new(library: Rc<RefCell<Library>>) -> Rc<Self> {
         let page = adw::PreferencesPage::builder().build();
-        let group = adw::PreferencesGroup::builder().title("Macros").build();
+        let group = adw::PreferencesGroup::builder()
+            .title("Macros")
+            .description("Record a macro here, then assign it to a button on the Buttons page.")
+            .build();
 
-        let mut rows = Vec::new();
-        let mut edit = Vec::new();
-        let mut remove = Vec::new();
-        for (i, button) in BUTTONS.iter().enumerate() {
-            let row = adw::ActionRow::builder()
-                .title(format!("{} — {}", i + 1, button.label()))
-                .subtitle("No macro")
-                .build();
-
-            let remove_btn = gtk::Button::builder()
-                .icon_name("user-trash-symbolic")
-                .tooltip_text("Remove this macro")
-                .valign(gtk::Align::Center)
-                .visible(false)
-                .build();
-            remove_btn.add_css_class("flat");
-
-            let edit_btn = gtk::Button::builder()
-                .label("Record")
-                .valign(gtk::Align::Center)
-                .build();
-
-            let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-            controls.append(&remove_btn);
-            controls.append(&edit_btn);
-            row.add_suffix(&controls);
-
-            group.add(&row);
-            rows.push(row);
-            edit.push(edit_btn);
-            remove.push(remove_btn);
-        }
+        let new_button = gtk::Button::builder()
+            .label("New macro")
+            .valign(gtk::Align::Center)
+            .build();
+        new_button.add_css_class("suggested-action");
+        group.set_header_suffix(Some(&new_button));
         page.add(&group);
 
-        MacrosPage { widget: page, group, rows, edit, remove }
-    }
+        let me = Rc::new(MacrosPage {
+            widget: page,
+            group,
+            rows: RefCell::new(Vec::new()),
+            library,
+            window: RefCell::new(None),
+            on_change: Rc::new(RefCell::new(None)),
+        });
 
-    pub fn load(&self, profile: &Profile) {
-        let macros = profile.macros();
-        for (i, row) in self.rows.iter().enumerate() {
-            match &macros[i] {
-                Some(m) => {
-                    row.set_subtitle(&summarise(m));
-                    self.edit[i].set_label("Edit");
-                    self.remove[i].set_visible(true);
-                }
-                None => {
-                    row.set_subtitle("No macro");
-                    self.edit[i].set_label("Record");
-                    self.remove[i].set_visible(false);
-                }
+        new_button.connect_clicked({
+            let me = me.clone();
+            move |_| {
+                let draft = NamedMacro {
+                    name: me.library.borrow().unused_name(),
+                    timing: Timing::Delay,
+                    events: Vec::new(),
+                };
+                me.edit(Some(draft));
             }
-        }
-        let free = profile.macro_slots_free();
-        let total = free + profile.macros().iter().flatten().map(|m| m.events.len() + 1).sum::<usize>();
-        self.group.set_description(Some(&format!(
-            "{} of {total} storage slots free. Every macro also uses one slot as a separator.",
-            free
-        )));
+        });
+
+        me
     }
 
-    /// `provide` gives a button's current macro and the slots it may use;
-    /// `apply` stores the result and is expected to repack and reload.
-    pub fn connect_editing<P, A>(&self, window: &gtk::Window, provide: P, apply: A)
-    where
-        P: Fn(usize) -> (Option<Macro>, usize) + 'static,
-        A: Fn(usize, Option<Macro>) + 'static,
-    {
-        let provide = Rc::new(provide);
-        let apply = Rc::new(apply);
+    /// The dialogs need a parent; the window does not exist when the page is
+    /// constructed, so it is supplied afterwards.
+    pub fn set_window(&self, window: &gtk::Window) {
+        *self.window.borrow_mut() = Some(window.clone());
+    }
 
-        for (i, button) in self.edit.iter().enumerate() {
-            let window = window.clone();
-            let provide = provide.clone();
-            let apply = apply.clone();
-            button.connect_clicked(move |_| {
-                let (existing, slots) = provide(i);
-                let apply = apply.clone();
-                macro_editor::open(&window, existing, slots, move |result| apply(i, result));
+    pub fn connect_changed<F: Fn() + 'static>(&self, f: F) {
+        *self.on_change.borrow_mut() = Some(Box::new(f));
+    }
+
+    fn notify(&self) {
+        if let Some(f) = self.on_change.borrow().as_ref() {
+            f();
+        }
+    }
+
+    fn edit(self: &Rc<Self>, existing: Option<NamedMacro>) {
+        let Some(window) = self.window.borrow().clone() else {
+            return;
+        };
+        let me = self.clone();
+        let previous_name = existing.as_ref().map(|m| m.name.clone());
+        macro_editor::open(&window, existing, move |result| {
+            if let Some(macro_) = result {
+                let mut library = me.library.borrow_mut();
+                // Renaming should move the entry, not leave a copy behind.
+                if let Some(old) = previous_name.as_deref() {
+                    if old != macro_.name {
+                        library.remove(old);
+                    }
+                }
+                library.put(macro_);
+                let _ = library.save();
+                drop(library);
+                me.refresh();
+                me.notify();
+            }
+        });
+    }
+
+    /// Rebuild the list from the library.
+    pub fn refresh(self: &Rc<Self>) {
+        for row in self.rows.borrow_mut().drain(..) {
+            self.group.remove(&row);
+        }
+        let entries = self.library.borrow().macros.clone();
+        let mut rows = Vec::new();
+        for entry in entries {
+            let row = adw::ActionRow::builder()
+                .title(&entry.name)
+                .subtitle(summarise(&entry))
+                .build();
+
+            let delete = gtk::Button::builder()
+                .icon_name("user-trash-symbolic")
+                .tooltip_text("Delete this macro")
+                .valign(gtk::Align::Center)
+                .build();
+            delete.add_css_class("flat");
+            let edit = gtk::Button::builder()
+                .label("Edit")
+                .valign(gtk::Align::Center)
+                .build();
+
+            delete.connect_clicked({
+                let me = self.clone();
+                let name = entry.name.clone();
+                move |_| {
+                    let Some(window) = me.window.borrow().clone() else {
+                        return;
+                    };
+                    // Deleting also unassigns it from any button, so confirm.
+                    let dialog = adw::MessageDialog::new(
+                        Some(&window),
+                        Some(&format!("Delete “{name}”?")),
+                        Some(
+                            "Any button using this macro will be left unassigned.                              This cannot be undone.",
+                        ),
+                    );
+                    dialog.add_responses(&[("cancel", "Cancel"), ("delete", "Delete")]);
+                    dialog.set_response_appearance(
+                        "delete",
+                        adw::ResponseAppearance::Destructive,
+                    );
+                    dialog.set_default_response(Some("cancel"));
+                    dialog.set_close_response("cancel");
+                    dialog.connect_response(None, {
+                        let me = me.clone();
+                        let name = name.clone();
+                        move |_, response| {
+                            if response != "delete" {
+                                return;
+                            }
+                            let mut library = me.library.borrow_mut();
+                            library.remove(&name);
+                            let _ = library.save();
+                            drop(library);
+                            me.refresh();
+                            me.notify();
+                        }
+                    });
+                    dialog.present();
+                }
             });
+            edit.connect_clicked({
+                let me = self.clone();
+                let entry = entry.clone();
+                move |_| me.edit(Some(entry.clone()))
+            });
+
+            let controls = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+            controls.append(&delete);
+            controls.append(&edit);
+            row.add_suffix(&controls);
+
+            self.group.add(&row);
+            rows.push(row);
         }
-        for (i, button) in self.remove.iter().enumerate() {
-            let apply = apply.clone();
-            button.connect_clicked(move |_| apply(i, None));
+        if rows.is_empty() {
+            let empty = adw::ActionRow::builder()
+                .title("No macros yet")
+                .subtitle("Use “New macro” to record one")
+                .build();
+            self.group.add(&empty);
+            rows.push(empty);
         }
+        *self.rows.borrow_mut() = rows;
     }
 }

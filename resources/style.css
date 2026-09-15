@@ -1,11 +1,11 @@
 /* Castty styling. Keep rules here rather than inline in widget code. */
 
-/* The preview sits on its own subtly recessed panel so the mouse reads as a
-   physical object rather than another control. */
+/* The stage is a plain recess; the mouse should read as a physical object, not
+   another control. The glow around it is painted by the preview itself from the
+   actual LED colour -- a themed accent colour here would light the mouse in
+   whatever hue the desktop happened to use. */
 .castty-stage {
-  background:
-    radial-gradient(circle at 50% 38%, alpha(@accent_bg_color, 0.14), transparent 62%),
-    alpha(currentColor, 0.04);
+  background: alpha(currentColor, 0.04);
 }
 
 .castty-picker {

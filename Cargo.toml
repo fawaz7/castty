@@ -7,6 +7,10 @@ description = "Linux configuration tool for the Mionix Castor mouse"
 
 [dependencies]
 libc = "0.2"
+# Macro names are not stored on the device -- the vendor software keeps them in
+# its own config -- so the named library lives in ours.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 gtk4 = { version = "0.9", features = ["v4_10"] }
 libadwaita = { version = "0.7", features = ["v1_5"] }
 # GTK removed glib's sync channel; this is how worker results reach the main loop
