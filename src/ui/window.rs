@@ -1,6 +1,6 @@
 //! Application window: shell, live preview, profile selection, apply plumbing.
 
-use super::buttons_page::ButtonsPage;
+use super::buttons_page::{ButtonsPage, MacroSlot};
 use super::dpi_page::DpiPage;
 use super::led_page::LedPage;
 use super::macros_page::MacrosPage;
@@ -108,6 +108,7 @@ fn build(app: &adw::Application) {
     preview_panel.add_css_class("castty-stage");
     preview_panel.set_size_request(380, -1);
     preview_panel.append(&preview.widget);
+    preview.widget.set_hexpand(true);
     preview.widget.set_vexpand(true);
 
     let led_page = Rc::new(LedPage::new());
@@ -233,12 +234,16 @@ fn build(app: &adw::Application) {
             // to be resolved and packed together.
             let lib = library.borrow();
             let assigned = buttons_page.macro_assignments();
+            // Read what is already stored before rewriting the area, so a macro
+            // that is no longer in the library can be carried through.
+            let existing = all[index].macros();
             let mut macros: [Option<crate::hardware::Macro>; 6] = Default::default();
-            for (i, name) in assigned.iter().enumerate() {
-                macros[i] = name
-                    .as_deref()
-                    .and_then(|n| lib.find(n))
-                    .map(|m| m.to_device());
+            for (i, slot) in assigned.iter().enumerate() {
+                macros[i] = match slot {
+                    MacroSlot::Library(name) => lib.find(name).map(|m| m.to_device()),
+                    MacroSlot::Keep => existing[i].clone(),
+                    MacroSlot::None => None,
+                };
             }
             if let Err(e) = all[index].set_macros(&macros) {
                 capacity_error.replace(Some(e.to_string()));
@@ -272,21 +277,10 @@ fn build(app: &adw::Application) {
     macros_page.refresh();
     macros_page.connect_changed({
         let refresh = refresh.clone();
-        let buttons_page = buttons_page.clone();
-        let library = library.clone();
-        let toasts = toasts.clone();
-        let apply = apply.clone();
         move || {
-            // A deleted macro must not leave a button pointing at a name that
-            // no longer resolves.
-            let cleared = buttons_page.prune_missing(&library.borrow());
-            if cleared > 0 {
-                toasts.add_toast(adw::Toast::new(&format!(
-                    "Unassigned from {cleared} button{}",
-                    if cleared == 1 { "" } else { "s" }
-                )));
-                apply.set_sensitive(true);
-            }
+            // Reloading re-resolves every button against the library. A macro
+            // deleted from the library stays on the mouse and is shown as "not
+            // in library" rather than being wiped.
             refresh();
         }
     });

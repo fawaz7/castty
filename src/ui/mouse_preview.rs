@@ -208,11 +208,13 @@ fn apply_effect(rgb: (u8, u8, u8), brightness: f64, hue: Option<f64>) -> (u8, u8
 
 impl MousePreview {
     pub fn new() -> Self {
+        // Fills its panel: the artwork is centred inside whatever space it
+        // gets, and the glow needs room to fade out.
         let widget = gtk::DrawingArea::builder()
             .content_width(PREVIEW_W)
             .content_height(PREVIEW_H)
-            .halign(gtk::Align::Center)
-            .valign(gtk::Align::Center)
+            .hexpand(true)
+            .vexpand(true)
             .build();
 
         let state = Rc::new(Cell::new(PreviewState::default()));
@@ -231,14 +233,6 @@ impl MousePreview {
                 // Fit the artwork into whatever we were actually allocated and
                 // draw in image coordinates, so the button callouts and the
                 // image can never disagree about where anything is.
-                let scale = (f64::from(width) / f64::from(PREVIEW_W))
-                    .min(f64::from(height) / f64::from(PREVIEW_H));
-                let ox = (f64::from(width) - f64::from(PREVIEW_W) * scale) / 2.0;
-                let oy = (f64::from(height) - f64::from(PREVIEW_H) * scale) / 2.0;
-                let _ = cr.save();
-                cr.translate(ox, oy);
-                cr.scale(scale, scale);
-
                 let s = state.get();
                 let t = start.elapsed().as_secs_f64();
                 let (brightness, hue) = animate(s.mode, t);
@@ -246,8 +240,18 @@ impl MousePreview {
                 let logo_rgb = apply_effect(s.logo, brightness, hue);
 
                 // Spill light onto the surround, coloured by the LEDs and
-                // following the effect's brightness. Off means no glow.
-                draw_glow(cr, wheel_rgb, logo_rgb);
+                // following the effect's brightness. Painted across the whole
+                // allocation before the image transform: confined to the
+                // artwork's box it would read as a lit rectangle.
+                draw_glow(cr, width, height, wheel_rgb, logo_rgb);
+
+                let scale = (f64::from(width) / f64::from(PREVIEW_W))
+                    .min(f64::from(height) / f64::from(PREVIEW_H));
+                let ox = (f64::from(width) - f64::from(PREVIEW_W) * scale) / 2.0;
+                let oy = (f64::from(height) - f64::from(PREVIEW_H) * scale) / 2.0;
+                let _ = cr.save();
+                cr.translate(ox, oy);
+                cr.scale(scale, scale);
 
                 if let Some(body) = &body {
                     cr.set_source_pixbuf(body, 0.0, 0.0);
@@ -316,7 +320,13 @@ impl MousePreview {
 ///
 /// Brightness follows the lit colours, so an effect that dims also dims the
 /// glow, and LEDs that are off produce none at all.
-fn draw_glow(cr: &gtk::cairo::Context, wheel: (u8, u8, u8), logo: (u8, u8, u8)) {
+fn draw_glow(
+    cr: &gtk::cairo::Context,
+    width: i32,
+    height: i32,
+    wheel: (u8, u8, u8),
+    logo: (u8, u8, u8),
+) {
     let mix = |a: u8, b: u8| f64::from(a.max(b)) / 255.0;
     let (r, g, b) = (
         mix(wheel.0, logo.0),
@@ -328,9 +338,10 @@ fn draw_glow(cr: &gtk::cairo::Context, wheel: (u8, u8, u8), logo: (u8, u8, u8)) 
         return;
     }
 
-    let (w, h) = (f64::from(PREVIEW_W), f64::from(PREVIEW_H));
-    let (cx, cy) = (w * 0.5, h * 0.42);
-    let radius = w * 0.95;
+    let (w, h) = (f64::from(width), f64::from(height));
+    let (cx, cy) = (w * 0.5, h * 0.45);
+    // Reach past the far corner so the falloff is never cut off by an edge.
+    let radius = (w.max(h)) * 0.75;
     let glow = gtk::cairo::RadialGradient::new(cx, cy, 0.0, cx, cy, radius);
     glow.add_color_stop_rgba(0.0, r, g, b, 0.30 * strength);
     glow.add_color_stop_rgba(0.55, r, g, b, 0.10 * strength);

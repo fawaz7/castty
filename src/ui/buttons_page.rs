@@ -19,7 +19,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Assignments the UI can construct directly, in dropdown order.
-const CHOICES: [(&str, ButtonAction); 10] = [
+const CHOICES: [(&str, ButtonAction); 14] = [
     ("Left click", ButtonAction::Mouse(0x01)),
     ("Right click", ButtonAction::Mouse(0x02)),
     ("Middle click", ButtonAction::Mouse(0x04)),
@@ -27,8 +27,13 @@ const CHOICES: [(&str, ButtonAction); 10] = [
     ("Side, rear", ButtonAction::Mouse(0x08)),
     ("Scroll up", ButtonAction::Scroll(1)),
     ("Scroll down", ButtonAction::Scroll(-1)),
-    ("Next profile", ButtonAction::ProfileSwitch(0xf1)),
-    ("Next DPI step", ButtonAction::DpiSwitch(0xf1)),
+    // Both switches take the same three directions: f0 up, f2 down, f1 cycles.
+    ("Profile up", ButtonAction::ProfileSwitch(0xf0)),
+    ("Profile down", ButtonAction::ProfileSwitch(0xf2)),
+    ("Profile cycle", ButtonAction::ProfileSwitch(0xf1)),
+    ("DPI up", ButtonAction::DpiSwitch(0xf0)),
+    ("DPI down", ButtonAction::DpiSwitch(0xf2)),
+    ("DPI cycle", ButtonAction::DpiSwitch(0xf1)),
     ("Disabled", ButtonAction::Disabled),
 ];
 
@@ -112,6 +117,18 @@ fn capture_key<F: Fn(u8) + 'static>(parent: &gtk::Window, on_key: F) {
     dialog.present();
 }
 
+/// What a button row says about macros.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MacroSlot {
+    /// Run this library macro.
+    Library(String),
+    /// Keep whatever is already on the device. A macro deleted from the library
+    /// stays on the mouse until the user changes that button, so the events are
+    /// carried through rather than wiped.
+    Keep,
+    None,
+}
+
 pub struct ButtonsPage {
     pub widget: adw::PreferencesPage,
     rows: Vec<adw::ComboRow>,
@@ -119,6 +136,8 @@ pub struct ButtonsPage {
     extra: Rc<RefCell<Vec<Option<ButtonAction>>>>,
     /// Library macro assigned to each row, by name.
     chosen: Rc<RefCell<Vec<Option<String>>>>,
+    /// Rows showing a macro that is on the device but not in the library.
+    keep: Rc<RefCell<Vec<bool>>>,
     /// Selection to fall back to when a dialog is cancelled.
     previous: Rc<RefCell<Vec<u32>>>,
     /// Set while populating, so it does not fire user-change logic.
@@ -162,6 +181,7 @@ impl ButtonsPage {
             rows,
             extra: Rc::new(RefCell::new(vec![None; count])),
             chosen: Rc::new(RefCell::new(vec![None; count])),
+            keep: Rc::new(RefCell::new(vec![false; count])),
             previous: Rc::new(RefCell::new(vec![0; count])),
             loading: Rc::new(Cell::new(false)),
         }
@@ -216,12 +236,14 @@ impl ButtonsPage {
                             match picked {
                                 Some(name) => {
                                     me2.extra.borrow_mut()[i] = None;
+                                    me2.keep.borrow_mut()[i] = false;
                                     me2.show(i, Some(&format!("Macro: {name}")));
                                     me2.chosen.borrow_mut()[i] = Some(name);
                                 }
                                 None => {
                                     me2.chosen.borrow_mut()[i] = None;
                                     me2.extra.borrow_mut()[i] = None;
+                                    me2.keep.borrow_mut()[i] = false;
                                     me2.show(i, None);
                                 }
                             }
@@ -238,6 +260,7 @@ impl ButtonsPage {
                         let changed = changed.clone();
                         capture_key(&window, move |usage| {
                             me2.chosen.borrow_mut()[i] = None;
+                            me2.keep.borrow_mut()[i] = false;
                             me2.extra.borrow_mut()[i] = Some(ButtonAction::Key(usage));
                             me2.show(i, Some(&format!("Key: {}", keycode::label(usage))));
                             changed();
@@ -247,6 +270,7 @@ impl ButtonsPage {
                         // An ordinary choice replaces whatever was there.
                         me.previous.borrow_mut()[i] = r.selected();
                         me.chosen.borrow_mut()[i] = None;
+                        me.keep.borrow_mut()[i] = false;
                         changed();
                     }
                 }
@@ -259,6 +283,7 @@ impl ButtonsPage {
         {
             let mut extra = self.extra.borrow_mut();
             let mut chosen = self.chosen.borrow_mut();
+            let mut keep = self.keep.borrow_mut();
             let mut previous = self.previous.borrow_mut();
             for (i, row) in self.rows.iter().enumerate() {
                 let action = profile.buttons[i];
@@ -279,6 +304,7 @@ impl ButtonsPage {
                     _ => None,
                 };
                 chosen[i] = name.clone();
+                keep[i] = matches!(action, ButtonAction::Macro { .. }) && name.is_none();
 
                 let text = describe(action, name.as_deref());
                 extra[i] = match action {
@@ -302,43 +328,25 @@ impl ButtonsPage {
         self.loading.set(false);
     }
 
-    /// Which library macro each button is set to. Resolving these into device
+    /// What each button wants doing about macros. Resolving these into device
     /// storage is the window's job, because macros share one area.
-    pub fn macro_assignments(&self) -> [Option<String>; BUTTONS.len()] {
+    pub fn macro_assignments(&self) -> [MacroSlot; BUTTONS.len()] {
         let chosen = self.chosen.borrow();
-        std::array::from_fn(|i| chosen[i].clone())
-    }
-
-    /// Drop assignments naming a macro that is no longer in the library, and
-    /// report how many were cleared. Deleting a macro must not leave a button
-    /// pointing at something that cannot be resolved.
-    pub fn prune_missing(&self, library: &Library) -> usize {
-        // Collect first: `show` needs the borrow released.
-        let stale: Vec<usize> = self
-            .chosen
-            .borrow()
-            .iter()
-            .enumerate()
-            .filter(|(_, slot)| {
-                slot.as_deref()
-                    .is_some_and(|name| library.find(name).is_none())
-            })
-            .map(|(i, _)| i)
-            .collect();
-
-        for &i in &stale {
-            self.chosen.borrow_mut()[i] = None;
-            self.show(i, None);
-        }
-        stale.len()
+        let keep = self.keep.borrow();
+        std::array::from_fn(|i| match (&chosen[i], keep[i]) {
+            (Some(name), _) => MacroSlot::Library(name.clone()),
+            (None, true) => MacroSlot::Keep,
+            (None, false) => MacroSlot::None,
+        })
     }
 
     /// Write the non-macro assignments; macro rows are left to the caller.
     pub fn store(&self, profile: &mut Profile) {
         let extra = self.extra.borrow();
         let chosen = self.chosen.borrow();
+        let keep = self.keep.borrow();
         for (i, row) in self.rows.iter().enumerate() {
-            if chosen[i].is_some() {
+            if chosen[i].is_some() || keep[i] {
                 continue;
             }
             let index = row.selected() as usize;

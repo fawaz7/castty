@@ -170,12 +170,11 @@ Types, from a capture that reassigned five buttons at once:
 | `0x02` | Single key | **HID usage code** — `0x1a` is `w` |
 | `0x03` | **Macro** | See the macro section; the entry carries a pointer and event count |
 | `0x08` | **Profile switch** | `f0` up, `f2` down, `f1` roll |
-| `0x09` | DPI switch | `f1` roll; up/down presumably `f0`/`f2` by analogy, untested |
+| `0x09` | **DPI switch** | `f0` up, `f2` down, `f1` roll — the same three, captured |
 | `0xff` | Disabled | `00` |
 
-Profile switch directions were captured by assigning each in turn: up, down, then roll, producing
-`f0`, `f2`, `f1`. DPI switching is assumed to use the same three parameters but only `f1` has been
-seen.
+Both switches were captured by assigning each direction in turn and take the same three parameters:
+`f0` up, `f2` down, `f1` roll.
 
 **The mouse can switch its own profiles.** Profile switch is a button function (`type 0x08`), so no
 host software is needed once it is assigned — which is why profiles are worth supporting properly.

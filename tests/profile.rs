@@ -477,3 +477,26 @@ fn macro_capacity_is_enforced() {
     slots[3] = Some(too_big);
     assert!(p.set_macros(&slots).is_err(), "33 slots must not fit in 32");
 }
+
+/// Both switch types take the same three direction parameters, captured by
+/// assigning each in turn in the vendor software.
+#[test]
+fn switch_directions_are_symmetric() {
+    use castty::hardware::ButtonAction;
+    for (up, down, roll) in [
+        (
+            ButtonAction::ProfileSwitch(0xf0),
+            ButtonAction::ProfileSwitch(0xf2),
+            ButtonAction::ProfileSwitch(0xf1),
+        ),
+        (
+            ButtonAction::DpiSwitch(0xf0),
+            ButtonAction::DpiSwitch(0xf2),
+            ButtonAction::DpiSwitch(0xf1),
+        ),
+    ] {
+        for action in [up, down, roll] {
+            assert_eq!(ButtonAction::from_entry(&action.to_entry()), action);
+        }
+    }
+}
