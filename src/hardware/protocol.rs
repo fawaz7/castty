@@ -73,6 +73,12 @@ pub mod offset {
     /// Where the vendor software starts allocating macro data.
     pub const MACRO_BASE_PTR: u16 = 800;
     pub const MACRO_EVENT_LEN: usize = 7;
+    /// First byte of macro storage.
+    pub const MACRO_BASE: usize = PAYLOAD + MACRO_BASE_PTR as usize;
+    /// Slots available for macro data. Each macro costs its event count plus
+    /// one for the terminator, and all macros in a profile share this.
+    pub const MACRO_SLOTS: usize =
+        (super::PROFILE_FRAME_LEN - MACRO_BASE) / MACRO_EVENT_LEN;
 
     /// Identify response fields (report 0x60, command 0x02).
     pub const ID_FIRMWARE: usize = 0x10;

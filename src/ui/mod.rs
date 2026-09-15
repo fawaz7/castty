@@ -5,6 +5,8 @@ pub mod buttons_page;
 pub mod colour_picker;
 pub mod dpi_page;
 pub mod led_page;
+pub mod macro_editor;
+pub mod macros_page;
 pub mod mouse_preview;
 pub mod profiles_page;
 pub mod window;

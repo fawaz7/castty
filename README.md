@@ -22,8 +22,8 @@ every field against real hardware.
 | Button assignment, including profile switching | ✅ |
 | Five profiles with editable names | ✅ |
 | Surface analyzer (Mionix S.Q.A.T.) | ✅ |
-| Macros | ❌ not decoded |
-| Single-key button assignment | ❌ preserved, not editable |
+| Macros — record, edit, timing and hold mode | ✅ |
+| Single-key button assignment | ✅ |
 
 ## Requirements
 

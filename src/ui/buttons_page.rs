@@ -29,8 +29,9 @@ const CHOICES: [(&str, ButtonAction); 10] = [
     ("Disabled", ButtonAction::Disabled),
 ];
 
-/// Sentinel row that opens the key-capture dialog instead of assigning.
-/// It is always the last entry, so a key can be reassigned as often as you like.
+/// Sentinel row that opens the key-capture dialog instead of assigning. It is
+/// always the last entry, so a key can be reassigned as often as you like.
+/// Macros are recorded on their own page, not here.
 const ASSIGN_KEY: &str = "Set a key\u{2026}";
 
 /// How an action outside `CHOICES` is described back to the user.

@@ -424,3 +424,56 @@ fn hold_macros_are_flagged_in_the_button_entry() {
     assert_eq!(rear.to_entry()[1], 0xfe);
     assert_eq!(p.buttons[3].to_entry()[1], 0x00);
 }
+
+/// Repacking must reproduce the vendor's own layout: sequential from the base
+/// pointer, with a terminator between macros.
+#[test]
+fn repacking_macros_reproduces_the_vendor_layout() {
+    use castty::hardware::{ButtonAction, Macro};
+    let original = Profile::decode(&fixture("profile1-macros")).unwrap();
+    let macros = original.macros();
+
+    let mut rebuilt = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    rebuilt.set_macros(&macros).unwrap();
+
+    assert_eq!(rebuilt.buttons[3], ButtonAction::Macro { ptr: 800, events: 6, hold: false });
+    assert_eq!(rebuilt.buttons[4], ButtonAction::Macro { ptr: 849, events: 12, hold: false });
+    assert_eq!(rebuilt.macro_events(rebuilt.buttons[3]), original.macro_events(original.buttons[3]));
+    assert_eq!(rebuilt.macro_events(rebuilt.buttons[4]), original.macro_events(original.buttons[4]));
+
+    // the byte-level layout should match the vendor's exactly
+    let a = rebuilt.encode().unwrap();
+    let b = original.encode().unwrap();
+    assert_eq!(&a[816..], &b[816..], "macro storage differs from the vendor layout");
+
+    // dropping a macro must not leave the button pointing into freed storage
+    let mut cleared = rebuilt.clone();
+    let mut without = macros.clone();
+    without[3] = None;
+    cleared.set_macros(&without).unwrap();
+    assert!(!matches!(cleared.buttons[3], ButtonAction::Macro { .. }));
+    // and the survivor moves to the base
+    assert_eq!(cleared.buttons[4], ButtonAction::Macro { ptr: 800, events: 12, hold: false });
+    let _ = Macro { events: vec![], hold: false };
+}
+
+/// Storage is shared and small, so overflow has to be refused rather than
+/// silently corrupting the profile.
+#[test]
+fn macro_capacity_is_enforced() {
+    use castty::hardware::{Macro, MacroEvent};
+    let mut p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    assert_eq!(p.macro_slots_free(), 32);
+
+    let event = MacroEvent { key: 0x04, pressed: true, delay_ms: 0 };
+    let fits = Macro { events: vec![event; 31], hold: false };
+    let mut slots: [Option<Macro>; 6] = Default::default();
+    slots[3] = Some(fits);
+    p.set_macros(&slots).unwrap(); // 31 events + terminator = 32
+    assert_eq!(p.macro_slots_free(), 0);
+
+    let too_big = Macro { events: vec![event; 32], hold: false };
+    let mut slots: [Option<Macro>; 6] = Default::default();
+    slots[3] = Some(too_big);
+    assert!(p.set_macros(&slots).is_err(), "33 slots must not fit in 32");
+}

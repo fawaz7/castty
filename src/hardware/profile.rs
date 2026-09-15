@@ -36,6 +36,8 @@ pub enum ValueError {
     AngleTuning(i8),
     Dpi(u16),
     LiftOff(u8),
+    /// Macros share one fixed area; this is slots needed against slots free.
+    MacroCapacity { needed: usize, available: usize },
 }
 
 impl fmt::Display for ValueError {
@@ -44,6 +46,10 @@ impl fmt::Display for ValueError {
             ValueError::AngleSnapping(v) => write!(f, "angle snapping {v} out of range 0..=15"),
             ValueError::AngleTuning(v) => write!(f, "angle tuning {v} out of range -30..=30"),
             ValueError::Dpi(v) => write!(f, "DPI {v} out of range {DPI_MIN}..={DPI_MAX}"),
+            ValueError::MacroCapacity { needed, available } => write!(
+                f,
+                "macros need {needed} slots but only {available} are free"
+            ),
             ValueError::LiftOff(v) => write!(
                 f,
                 "lift-off {v} out of range {}..={}",
@@ -299,6 +305,14 @@ impl MacroEvent {
             (ms >> 16) as u8,
         ]
     }
+}
+
+/// A recorded macro, as the UI deals with it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Macro {
+    pub events: Vec<MacroEvent>,
+    /// Hold the keys down while the button is held, instead of replaying.
+    pub hold: bool,
 }
 
 /// What a button does. Stored as `<type> <param>`; `Unknown` preserves anything
@@ -557,6 +571,85 @@ impl Profile {
 
     pub fn raw(&self) -> &[u8] {
         &self.raw
+    }
+
+    /// Every macro in the profile, indexed by button.
+    pub fn macros(&self) -> [Option<Macro>; offset::BUTTON_COUNT] {
+        std::array::from_fn(|i| match self.buttons[i] {
+            action @ ButtonAction::Macro { hold, .. } => Some(Macro {
+                events: self.macro_events(action),
+                hold,
+            }),
+            _ => None,
+        })
+    }
+
+    /// Replace every macro, repacking the shared storage area.
+    ///
+    /// Macros are packed sequentially from the base pointer with a terminator
+    /// between them, which is what the vendor software does. Rewriting all of
+    /// them together is the only safe way to change one: they share an area and
+    /// resizing any macro moves the ones after it.
+    pub fn set_macros(
+        &mut self,
+        macros: &[Option<Macro>; offset::BUTTON_COUNT],
+    ) -> Result<(), ValueError> {
+        let needed: usize = macros
+            .iter()
+            .flatten()
+            .map(|m| m.events.len() + 1) // + terminator
+            .sum();
+        if needed > offset::MACRO_SLOTS {
+            return Err(ValueError::MacroCapacity {
+                needed,
+                available: offset::MACRO_SLOTS,
+            });
+        }
+
+        // Clear the whole area so stale events cannot be left behind.
+        for byte in &mut self.raw[offset::MACRO_BASE..] {
+            *byte = 0;
+        }
+
+        let mut ptr = offset::MACRO_BASE_PTR;
+        for (i, slot) in macros.iter().enumerate() {
+            match slot {
+                Some(m) => {
+                    let addr = offset::PAYLOAD + ptr as usize;
+                    for (k, event) in m.events.iter().enumerate() {
+                        let at = addr + k * offset::MACRO_EVENT_LEN;
+                        self.raw[at..at + offset::MACRO_EVENT_LEN]
+                            .copy_from_slice(&event.to_bytes());
+                    }
+                    self.buttons[i] = ButtonAction::Macro {
+                        ptr,
+                        events: m.events.len() as u8,
+                        hold: m.hold,
+                    };
+                    // + 1 for the zero terminator between macros
+                    ptr += (m.events.len() as u16 + 1) * offset::MACRO_EVENT_LEN as u16;
+                }
+                None => {
+                    // A button that no longer has a macro must not keep pointing
+                    // into the area we just rewrote.
+                    if matches!(self.buttons[i], ButtonAction::Macro { .. }) {
+                        self.buttons[i] = ButtonAction::Disabled;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Slots left for macro events, counting the terminator each macro needs.
+    pub fn macro_slots_free(&self) -> usize {
+        let used: usize = self
+            .macros()
+            .iter()
+            .flatten()
+            .map(|m| m.events.len() + 1)
+            .sum();
+        offset::MACRO_SLOTS.saturating_sub(used)
     }
 
     /// Read the events of a macro assigned to a button.

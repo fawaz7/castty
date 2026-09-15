@@ -3,6 +3,7 @@
 use super::buttons_page::ButtonsPage;
 use super::dpi_page::DpiPage;
 use super::led_page::LedPage;
+use super::macros_page::MacrosPage;
 use super::mouse_preview::MousePreview;
 use super::profiles_page::ProfilesPage;
 use super::worker::{Job, Update, Worker};
@@ -108,6 +109,7 @@ fn build(app: &adw::Application) {
     let led_page = Rc::new(LedPage::new());
     let dpi_page = Rc::new(DpiPage::new());
     let buttons_page = Rc::new(ButtonsPage::new());
+    let macros_page = Rc::new(MacrosPage::new());
     let profiles_page = Rc::new(ProfilesPage::new());
 
     let stack = adw::ViewStack::new();
@@ -128,6 +130,12 @@ fn build(app: &adw::Application) {
         Some("buttons"),
         "Buttons",
         "input-touchpad-symbolic",
+    );
+    stack.add_titled_with_icon(
+        &scroller(&macros_page.widget),
+        Some("macros"),
+        "Macros",
+        "media-playback-start-symbolic",
     );
     stack.add_titled_with_icon(
         &scroller(&profiles_page.widget),
@@ -175,6 +183,7 @@ fn build(app: &adw::Application) {
         let led_page = led_page.clone();
         let dpi_page = dpi_page.clone();
         let buttons_page = buttons_page.clone();
+        let macros_page = macros_page.clone();
         let profiles_page = profiles_page.clone();
         let preview = preview.clone();
         let loading = loading.clone();
@@ -187,6 +196,7 @@ fn build(app: &adw::Application) {
             led_page.load(p);
             dpi_page.load(p);
             buttons_page.load(p);
+            macros_page.load(p);
             profiles_page.load(&snapshot);
             preview.set_state(led_page.preview_state());
             loading.set(false);
@@ -233,6 +243,47 @@ fn build(app: &adw::Application) {
     // The key-capture dialog needs a parent window, so wire it once the window
     // exists rather than inside the page's constructor.
     buttons_page.connect_key_assignment(window.upcast_ref::<gtk::Window>(), mark_dirty.clone());
+
+    macros_page.connect_editing(
+        window.upcast_ref::<gtk::Window>(),
+        {
+            let profiles = profiles.clone();
+            let current = current.clone();
+            move |i| {
+                let all = profiles.borrow();
+                let p = &all[current.get()];
+                let existing = p.macros()[i].clone();
+                // This macro may reuse whatever it already occupies.
+                let own = existing.as_ref().map_or(0, |m| m.events.len() + 1);
+                (existing, p.macro_slots_free() + own)
+            }
+        },
+        {
+            let profiles = profiles.clone();
+            let current = current.clone();
+            let collect = collect.clone();
+            let refresh = refresh.clone();
+            let apply = apply.clone();
+            let toasts = toasts.clone();
+            move |i, result| {
+                // Keep edits made on other rows before rewriting the profile.
+                collect();
+                let outcome = {
+                    let mut all = profiles.borrow_mut();
+                    let index = current.get();
+                    let mut macros = all[index].macros();
+                    macros[i] = result;
+                    all[index].set_macros(&macros)
+                };
+                if let Err(e) = outcome {
+                    toasts.add_toast(adw::Toast::new(&e.to_string()));
+                    return;
+                }
+                refresh();
+                apply.set_sensitive(true);
+            }
+        },
+    );
 
     led_page.connect_changed(mark_dirty.clone());
     dpi_page.connect_changed(mark_dirty.clone());
