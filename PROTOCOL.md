@@ -1,0 +1,350 @@
+# Mionix Castor (22d4:1316) — wire protocol
+
+Status: **in progress.** Everything below is observed from live capture of the vendor app
+(`CASTOR Software.exe` v1.44) running under Wine against real hardware, unless marked as a guess.
+
+## Transport
+
+- Device `22d4:1316`, two HID interfaces. **Interface 1** is the config channel (`bInterfaceProtocol 0`).
+  Resolve it via sysfs (`HID_ID=0003:000022D4:00001316`, `HID_PHYS` ending `input1`) — never a fixed
+  `/dev/hidrawN` index.
+- Two vendor feature reports (usage page `0xFF01`):
+  - `0x60` — 63 data bytes (64 with report ID). Command/response.
+  - `0x61` — 1040 data bytes (1041 with ID). Bulk profile/macro blob. Not yet observed in traffic.
+
+## Command pattern (confirmed)
+
+The channel is **request/response over the same report**, not a plain register read:
+
+1. `HIDIOCSFEATURE` on report `0x60` — a 64-byte buffer, `[0]=0x60`, `[1]=<command>`, rest zero.
+2. `HIDIOCGFEATURE` on report `0x60` — 64 bytes back, `[0]=0x00`, `[1]=0x01` (ack/status), payload follows.
+
+A bare `GET` with no preceding `SET` returns all zeros — which is why probing the device cold looks dead.
+Both ioctls return 64; writes succeed.
+
+## Commands observed
+
+All verified against hardware. Command byte is `[1]`; report ID is `[0]`.
+
+| Report | Cmd | Name | Notes |
+|---|---|---|---|
+| `0x60` | `0x02` | Identify | Returns firmware version + MCU string |
+| `0x60` | `0x03` | Status poll | Vendor app repeats every 2 s; returns zeros while idle |
+| `0x60` | `0x04` | **Commit** | Bare frame, payload all zero. Applies pending profile writes |
+| `0x61` | `0x08` | Profile write | 1041-byte blob (below), or short terminator form |
+| `0x60` | `0x05` | **Surface analyzer** | `[2]`=1 start, `[2]`=2 read result |
+
+### `0x02` identify response
+
+```
+offset  10: 89 01 .. .. .. .. 1a 53 54 4d 33 32      "STM32"
+```
+
+- `[0x10..0x11]` LE16 = firmware version. Observed `0x0189`, matching USB `bcdDevice`.
+- `[0x17..0x1b]` = ASCII `"STM32"`, matching USB `iSerial`.
+
+### `0x61` / `0x08` — profile blob (1041 bytes)
+
+Decoded from a 56-apply capture session, one setting changed per apply.
+
+| Offset | Size | Field | Confidence |
+|---|---|---|---|
+| `[0]` | 1 | Report ID `0x61` | certain |
+| `[1]` | 1 | Command `0x08` | certain |
+| `[5]` | 1 | Profile index (0-4) | certain |
+| `[6]` | 1 | `0x01` in the short terminator form | certain |
+| `[16]` | 1 | Profile index (repeated) | certain |
+| `[17..26]` | 10 | Profile name, ASCII, zero-padded | certain |
+| `[34]` | 1 | Constant `0x08` | certain |
+| `[37]` | 1 | **Polling rate divisor** — see below | high |
+| `[38]` | 1 | Constant `0x01`, purpose unknown | — |
+| `[39..62]` | 24 | **Six colour records**, see below | certain |
+| `[66]` | 1 | Active DPI step. Constant `0x02` in all captures | low |
+| `[68..71]` | 4 | **DPI step 1: X then Y, LE16 each** | certain |
+| `[77..80]` | 4 | **DPI step 2: X then Y, LE16 each** | certain |
+| `[86]` | 1 | **Lift-off distance**, 1-31. Factory default `0x0c` | certain |
+| `[88]` | 1 | **Angle snapping**, level `0`-`15`. Default `0` | certain |
+| `[98..101]` | 4 | **DPI step 3: X then Y, LE16 each** | certain |
+| `[102]` | 1 | DPI step count. Constant `0x03` | high |
+| `[104]` | 1 | **Angle tuning**, signed int8 two's complement, -30..+30 | certain |
+| `[117..158]` | 42 | **Button table**, 6 x 7 bytes | certain |
+
+#### Colour records
+
+Six records of **`<R> <G> <B> <mode>`** — the colour comes *first*, the mode byte *last*:
+
+```
+[39] [43]           two independently settable records  -> the two physical LEDs
+[47] [48]           two-byte gap, both zero
+[49] [53] [57] [61] four more records, all default (201,255,0)
+```
+
+**`[39]` is the scroll wheel and `[43]` is the logo.** Established by lighting one at a time: with the
+wheel set to red alone, `[39]` held `(255,0,0)` and `[43]` was `(0,0,0)`; with the logo green alone,
+the reverse. They are independently settable. The remaining four always moved
+together and are most likely the DPI-step indicator colours — **not yet confirmed**.
+
+All six **mode** bytes always change together, and this reflects the hardware, not just the vendor
+app's habit. Two experiments, covering both nibbles:
+
+- Animation: wheel `0x01` (solid) + logo `0x02` (blinking) -> **both solid**.
+- Rainbow: wheel `0x11` (rainbow) + logo `0x01` (solid) -> **both rainbow**.
+
+In each case the whole device followed the **first** record's byte (`[42]`) and the others were
+ignored. So the entire mode byte -- animation *and* rainbow -- is a single global setting read from
+`[42]`. Per-LED **colour** is independent; nothing else about the lighting is.
+
+Write the same value to all six mode bytes anyway: the vendor app does, and relying on `[42]` alone is
+an assumption about undocumented firmware.
+
+**The mode byte is two fields, not an enum.** The low nibble selects the animation and the high
+nibble turns on rainbow (colour cycling), and the two combine freely:
+
+| Low nibble | Animation |
+|---|---|
+| `0x1` | Solid |
+| `0x2` | Blinking |
+| `0x3` | Pulsating |
+| `0x4` | Breathing |
+
+| High nibble | Colour |
+|---|---|
+| `0x0` | The stored colour |
+| `0x1` | Rainbow — cycles the spectrum, stored colour ignored |
+
+So `0x14` is "breathing **and** rainbow" and `0x11` is "solid + rainbow" (what the vendor UI calls
+Color Shift). Confirmed on hardware: writing `0x14` produced a breathing rainbow.
+
+This was missed at first because the vendor dropdown presents the eight combinations as a flat list;
+the structure only appeared when all four `0x1x` values were tried in sequence.
+
+#### Polling rate — `[37]`
+
+Observed `0x01`, `0x02`, `0x04`, `0x08`, stepped in that order through the GUI's rate list. These are
+divisors of 1000 Hz, so almost certainly `1`=1000 Hz, `2`=500 Hz, `4`=250 Hz, `8`=125 Hz.
+**Not independently verified** — confirm before relying on it.
+
+#### DPI steps — solved
+
+The Castor stores **exactly three** DPI steps (the GUI slider has three points), which is why the slot
+spacing looked irregular: the three slots are `[68]`, `[77]`, `[98]`, with unrelated fields in between.
+`[102]` holds the step count and is constantly `0x03`, consistent with three.
+
+Each slot is **X then Y as LE16**. The axes really are independent: a capture with the vendor UI's
+link checkbox cleared produced `[68]`=850 (X) and `[70]`=3200 (Y), which also confirms X comes first.
+
+**Nothing on the device records whether the axes are linked.** No byte changed when the checkbox was
+toggled, so that is purely vendor-UI state. `castty` infers it from the data (`x == y` for every step)
+and writes no flag.
+
+Confirmed values range 400-9150, always multiples of 50.
+
+`[66]` is constantly `0x02` and is the likely "currently active step" index, but it never changed in any
+capture, so that is a guess. Switching the active step (the DPI button on the mouse) would confirm it.
+
+#### Button table — `[117..158]`
+
+Six entries of 7 bytes, one per physical button, each laid out as:
+
+```
+<type> <param> 00 00 00 00 0f
+```
+
+Entry order is fixed and is **not** the bitmask order:
+
+| # | Offset | Button | Factory type/param |
+|---|---|---|---|
+| 0 | `[117]` | Left | `00` / `01` |
+| 1 | `[124]` | Right | `00` / `02` |
+| 2 | `[131]` | Wheel click | `00` / `04` |
+| 3 | `[138]` | Side, front | `00` / `10` |
+| 4 | `[145]` | Side, rear | `00` / `08` |
+| 5 | `[152]` | DPI | `09` / `f1` |
+
+Types, from a capture that reassigned five buttons at once:
+
+| Type | Meaning | Param |
+|---|---|---|
+| `0x00` | Standard mouse button | Button bitmask: `01` left, `02` right, `04` middle, `08` side, `10` side |
+| `0x01` | Scroll | Signed direction: `01` up, `ff` (-1) down |
+| `0x02` | Single key | **HID usage code** — `0x1a` is `w` |
+| `0x08` | **Profile switch** | `f1` for the "roll" variant |
+| `0x09` | DPI switch | `f1` for the "roll" variant |
+| `0xff` | Disabled | `00` |
+
+The vendor UI also offers up/down variants of profile and DPI switching, and macro assignment; only
+the "roll" variants and the types above have been captured so far.
+
+**The mouse can switch its own profiles.** Profile switch is a button function (`type 0x08`), so no
+host software is needed once it is assigned — which is why profiles are worth supporting properly.
+
+An earlier version of this document placed the table at `[118]` with the fields reversed. The
+alignment was settled by noticing that remapped bytes always changed in pairs seven apart.
+
+#### Angle tuning — `[104]`
+
+Signed 8-bit two's complement. Captured across the full GUI range, which pins the encoding exactly:
+
+| GUI value | Byte |
+|---|---|
+| -30 | `0xe2` |
+| -15 | `0xf1` |
+| 0 | `0x00` |
+| +15 | `0x0f` |
+| +30 | `0x1e` |
+
+#### Surface analyzer (S.Q.A.T.) — `0x60` / `0x05`
+
+Mionix's **Surface Quality Analyzer Tool**. Per Mionix's own description it measures the *data loss
+between successive images taken by the sensor* and reports a rating where higher means less loss;
+their marketing rates mousepads on a **1-10** scale and calls 8+ "no loss of tracking".
+
+Two steps on the command report, not part of the profile blob:
+
+1. `[1]=0x05`, `[2]=0x01` — start. Response is a bare ack.
+2. `[1]=0x05`, `[2]=0x02` — read result, returned at **`[16]`**.
+
+**The user must move the mouse across the surface between the two calls.** The vendor UI (recovered
+from its skin bitmaps) shows "Move the mouse over the surface area... make sure that you cover as much
+as possible of the area", with an elapsed-seconds counter and a separate "Show result" button.
+Reading immediately after starting measures nothing -- the `0x28` (40) captured early in this project
+was taken after ~200 ms with the mouse stationary and should not be treated as a real reading.
+
+**Raw-to-score mapping: `score = round(raw x 0.18)`**, and the vendor UI displays that score times
+ten -- which is why a raw of ~40 appears as "70" and looked like a discrepancy between our reading and
+theirs. Our raw values match the vendor's exactly; only the presentation differed.
+
+Fitted by running the vendor tool across five surfaces while capturing the raw byte behind each
+displayed score:
+
+| Surface | Raw | Vendor score |
+|---|---|---|
+| A4 paper, mouse not moved | 0 | 0 |
+| Clear plastic case | 13 | 20 |
+| Wooden desk | 28 | 50 |
+| Aluminium laptop lid | 38 | 70 |
+| Mousepad | 39 | 70 |
+
+The vendor quantises to whole units, so raw 38, 39 and 40 all show as 70. **The top of the range is
+unverified** -- no surface tested scored above 7, so the slope is fitted from the lower two thirds.
+
+A reading of 0 means the sensor gathered nothing, normally because the mouse was not moved during the
+measurement window.
+
+The vendor's measurement window is about 10 s (it shows a countdown), with the result read roughly
+12-15 s after the start command.
+
+#### Reset to default
+
+**There is no reset command.** The vendor app implements it client-side: it writes a full profile blob
+of factory values to every profile and commits, exactly like any other apply. `castty` should do the
+same — the captured defaults are in `captures/factory-default-p*.bin`.
+
+Factory defaults: DPI 3000, LED `(201,255,0)` mode `0x01` solid, polling `[37]=1`, angle snapping `0`,
+angle tuning `0`.
+
+#### Profile selection — solved
+
+**Byte `[5]` of the commit frame (`0x60` / `0x04`) is the active profile index.** The commit both
+applies pending writes and switches the mouse to that profile; there is no separate select command.
+
+Verified across four sessions: sessions 1-2 always committed `[5]=0` (editing Profile1), session 3
+cycles `0`-`4` as profiles were switched, and session 4 sits on `[5]=1` throughout, dropping to `0`
+exactly at the switch to Profile1 and returning to `1` on the way back.
+
+Renaming works and round-trips (`[17..26]`, 10 bytes).
+
+Note a vendor-app quirk worth **not** reproducing: switching away and back collapses per-LED colours,
+rewriting both LEDs to the same value. The hardware has no such limitation.
+
+#### Effect timing (measured)
+
+Not adjustable, but worth recording -- no vendor documentation states these, and the UI preview is
+driven from them. Measured by counting cycles against a stopwatch:
+
+| Effect | Period | How measured |
+|---|---|---|
+| Blinking | 1.154 s | 26 cycles in 30 s |
+| Pulsating | 1.58 s | 19 heartbeats in 30 s (each = two blackouts) |
+| Breathing | 6.0 s | 5 cycles in 30 s |
+| Rainbow hue loop | ~5 s | one full loop timed |
+
+**Pulsating is a heartbeat, not a sine.** Each cycle is **two** blackouts in quick succession
+(together under half a second), then the LEDs are held lit for the remainder. Breathing is the smooth
+one. Getting the waveform wrong makes a preview that looks nothing like the hardware even when the
+period is exactly right -- this one took three corrections to get from "sine" to "double beat".
+
+#### Effect speed is not adjustable
+
+**Tested and ruled out.** The vendor software exposes no speed control, no byte in four capture
+sessions correlated with timing, and direct probing found nothing:
+
+- Mode byte high nibble `0x2`, `0x3`, `0x4` (as `0x24`/`0x34`/`0x44`) all behaved as plain breathing.
+  Note `0x34` has bit `0x10` set yet showed no rainbow, so the firmware matches the high nibble
+  against an exact value rather than testing a bit; anything but `0` or `1` falls back to `0`.
+- `[38]` (always `0x01`), `[47]` and `[48]` (the always-zero gap inside the LED block), and `[86]`
+  were each swept across their range while breathing. No change of any kind.
+
+Effect timing is fixed in firmware. Do not re-investigate without new evidence.
+
+#### Writes only take effect on commit
+
+A profile blob write alone changes nothing visible -- the LEDs keep their previous state. Only the
+`0x60`/`0x04` commit applies staged data. Verified by writing a full green profile without a commit
+(no change) and then committing the identical data (LEDs turned green).
+
+**Consequence: there is no volatile path.** Every visible change costs a commit, and commits persist
+to the MCU's flash. Host-driven animation -- repainting colours per frame to synthesise custom
+effects -- would mean tens of flash writes per second against an endurance budget on the order of
+10,000 cycles, and would destroy the device in about an hour. Do not build it on this path. Custom
+lighting is limited to what the firmware implements unless a direct-control command is found.
+
+#### No read path
+
+Across 1260 GET_FEATURE calls in two capture sessions, **the vendor app never reads a profile back**.
+It only ever reads identify (`0x02`) and the status poll (`0x03`). There is no known command that
+returns stored settings.
+
+Consequence for `castty`: the device cannot be queried for its current configuration, so the
+application must persist its own state and treat the factory-default blob as the starting point. This
+is what the vendor app does too.
+
+#### Macros — not yet mapped
+
+The final 880 bytes of the blob (`[160..1040]`) are all zero in every capture so far, and are almost
+certainly macro storage. The vendor macro editor has substantial UI (event capture, per-event delays)
+and has been deliberately deferred. Nothing else depends on it.
+
+### Apply sequence (verified by replay)
+
+Per Apply the vendor app sends, for **every** profile 0-4:
+
+1. `0x61` / `0x08`, full 1041-byte blob, `[5]` = profile index
+2. `0x61` / `0x08`, short frame with `[5]` = index, `[6]` = `0x01` (per-profile terminator)
+
+then once, globally:
+
+3. `0x60` / `0x04` — commit
+
+**This has been replayed successfully from Linux with no Wine involved**: taking a captured blob,
+substituting `[39..41]` and `[43..45]`, and sending blob → terminator → commit changes the physical LED
+colour. Writing only the active profile (not all five) is sufficient.
+
+Reference implementation of the above: the probe script described in CLAUDE.md. Golden fixtures for the
+three captured colours are in `captures/` and should be used as regression inputs for the Rust decoder.
+
+## Reproducing the capture
+
+See CLAUDE.md → "Capture rig". Two non-obvious prerequisites:
+
+1. udev rule tagging `22d4:1316` `uaccess` (`/dev/hidraw*` is `root:root 0600` by default).
+2. Wine hides the device otherwise: interface 1's descriptor leads with a **keyboard** collection
+   (usage `0001:0006`), and `is_hidraw_enabled()` blanket-rejects mouse/keyboard hidraw devices.
+   The `EnableHidraw` multi-string is checked *after* that rejection, so it cannot help. The per-device
+   override is checked *before* it and does work:
+
+   ```
+   HKLM\System\CurrentControlSet\Services\WineBus\Devices\22d4/1316  →  Hidraw (REG_DWORD) = 1
+   ```
+
+   Subkey name format is `%04x/%04x`, lowercase.

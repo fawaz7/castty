@@ -1,0 +1,24 @@
+/* Castty styling. Keep rules here rather than inline in widget code. */
+
+/* The preview sits on its own subtly recessed panel so the mouse reads as a
+   physical object rather than another control. */
+.castty-stage {
+  background:
+    radial-gradient(circle at 50% 38%, alpha(@accent_bg_color, 0.14), transparent 62%),
+    alpha(currentColor, 0.04);
+}
+
+.castty-picker {
+  border-radius: 10px;
+  border: 1px solid alpha(currentColor, 0.18);
+}
+
+.castty-swatch {
+  border-radius: 5px;
+  border: 1px solid alpha(currentColor, 0.28);
+}
+
+/* Disabled colour controls should read as unavailable, not merely greyed. */
+.castty-picker:disabled {
+  opacity: 0.45;
+}

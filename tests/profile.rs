@@ -1,0 +1,307 @@
+//! Tests run against blobs captured from the vendor application on real
+//! hardware, so a passing encode is a frame the device has actually accepted.
+
+use castty::hardware::{DpiStep, Effect, Led, LedMode, PollingRate, Profile};
+use std::fs;
+
+fn fixture(name: &str) -> Vec<u8> {
+    fs::read(format!("captures/{name}.bin"))
+        .unwrap_or_else(|e| panic!("missing fixture {name}: {e}"))
+}
+
+#[test]
+fn decodes_captured_profile() {
+    let p = Profile::decode(&fixture("profile1-blue")).unwrap();
+    assert_eq!(p.index, 0);
+    assert_eq!(p.name, "Profile1");
+    assert_eq!(p.dpi_step_count, 3);
+    // the capture left both physical LEDs blue, solid
+    assert_eq!(p.leds[0], Led { r: 0, g: 0, b: 255, mode: LedMode::new(Effect::Solid, false) });
+    assert_eq!(p.leds[1], Led { r: 0, g: 0, b: 255, mode: LedMode::new(Effect::Solid, false) });
+}
+
+#[test]
+fn round_trips_every_fixture_byte_exact() {
+    for name in [
+        "profile1-red", "profile1-green", "profile1-blue",
+        "factory-default-p0", "factory-default-p1", "factory-default-p2",
+        "factory-default-p3", "factory-default-p4",
+    ] {
+        let raw = fixture(name);
+        let encoded = Profile::decode(&raw).unwrap().encode().unwrap();
+        assert_eq!(encoded, raw, "round-trip changed bytes for {name}");
+    }
+}
+
+/// The strongest check available without hardware: take the frame the vendor
+/// app sent for red, recolour the two physical LEDs green, and require the
+/// result to equal the frame it actually sent for green.
+#[test]
+fn recolouring_reproduces_the_captured_transition() {
+    let mut p = Profile::decode(&fixture("profile1-red")).unwrap();
+    for led in p.leds.iter_mut().take(2) {
+        led.r = 0x00;
+        led.g = 0xff;
+        led.b = 0x00;
+    }
+    assert_eq!(p.encode().unwrap(), fixture("profile1-green"));
+}
+
+#[test]
+fn factory_defaults_match_documented_values() {
+    let p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    assert_eq!(p.dpi[0], DpiStep::linked(3000));
+    assert_eq!(p.leds[0], Led { r: 201, g: 255, b: 0, mode: LedMode::new(Effect::Solid, false) });
+    assert_eq!(p.polling, Some(PollingRate::Hz1000));
+    assert_eq!(p.angle_snapping, 0);
+    assert_eq!(p.angle_tuning, 0);
+}
+
+#[test]
+fn angle_tuning_is_twos_complement() {
+    let mut p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    for (value, byte) in [(-30i8, 0xe2u8), (-15, 0xf1), (0, 0x00), (15, 0x0f), (30, 0x1e)] {
+        p.angle_tuning = value;
+        assert_eq!(p.encode().unwrap()[104], byte, "angle tuning {value}");
+    }
+}
+
+#[test]
+fn polling_rates_map_to_divisors() {
+    for (rate, hz, byte) in [
+        (PollingRate::Hz1000, 1000, 1u8),
+        (PollingRate::Hz500, 500, 2),
+        (PollingRate::Hz250, 250, 4),
+        (PollingRate::Hz125, 125, 8),
+    ] {
+        assert_eq!(rate.hz(), hz);
+        assert_eq!(rate.to_byte(), byte);
+        assert_eq!(PollingRate::from_byte(byte), Some(rate));
+    }
+}
+
+#[test]
+fn rejects_out_of_range_values() {
+    let base = Profile::decode(&fixture("factory-default-p0")).unwrap();
+
+    let mut p = base.clone();
+    p.angle_snapping = 16;
+    assert!(p.encode().is_err());
+
+    let mut p = base.clone();
+    p.angle_tuning = 31;
+    assert!(p.encode().is_err());
+
+    let mut p = base.clone();
+    p.dpi[0] = DpiStep::linked(20_000);
+    assert!(p.encode().is_err());
+}
+
+/// The macro region is unmapped; a read/modify/write must not disturb it.
+#[test]
+fn preserves_unmapped_macro_region() {
+    let raw = fixture("profile1-blue");
+    let mut p = Profile::decode(&raw).unwrap();
+    p.set_all_colours(1, 2, 3);
+    p.set_mode(LedMode::new(Effect::Blinking, false));
+    let out = p.encode().unwrap();
+    assert_eq!(&out[160..], &raw[160..]);
+}
+
+/// The name field is 10 bytes, not the 8 originally assumed -- a capture where
+/// a profile was renamed to "testrename" is what caught it.
+#[test]
+fn decodes_full_length_profile_name() {
+    let p = Profile::decode(&fixture("profile2-renamed")).unwrap();
+    assert_eq!(p.name, "testrename");
+    assert_eq!(p.encode().unwrap(), fixture("profile2-renamed"));
+}
+
+#[test]
+fn renaming_round_trips() {
+    let mut p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    for name in ["a", "Profile1", "testrename"] {
+        p.name = name.to_string();
+        let encoded = p.encode().unwrap();
+        assert_eq!(Profile::decode(&encoded).unwrap().name, name);
+    }
+}
+
+/// The logo and scroll wheel are independently settable; the capture that
+/// proves it had them at different colours in the same frame.
+#[test]
+fn physical_leds_are_independent() {
+    let p = Profile::decode(&fixture("profile1-split-leds")).unwrap();
+    assert_ne!(
+        (p.leds[0].r, p.leds[0].g, p.leds[0].b),
+        (p.leds[1].r, p.leds[1].g, p.leds[1].b),
+        "fixture should have the two LEDs at different colours"
+    );
+    assert_eq!(p.physical_leds().len(), 2);
+}
+
+/// The mode byte is two fields: low nibble selects the animation, high nibble
+/// turns on rainbow. Established by observing the mouse -- 0x14 runs breathing
+/// *and* colour cycling at once.
+#[test]
+fn mode_byte_splits_into_effect_and_rainbow() {
+    for (effect, nibble) in [
+        (Effect::Solid, 0x01u8),
+        (Effect::Blinking, 0x02),
+        (Effect::Pulsating, 0x03),
+        (Effect::Breathing, 0x04),
+    ] {
+        let plain = LedMode::new(effect, false);
+        assert_eq!(plain.to_byte(), nibble);
+        assert_eq!(LedMode::from_byte(nibble), plain);
+
+        let rainbow = LedMode::new(effect, true);
+        assert_eq!(rainbow.to_byte(), 0x10 | nibble);
+        assert_eq!(LedMode::from_byte(0x10 | nibble), rainbow);
+        assert!(rainbow.rainbow());
+        assert_eq!(rainbow.effect(), effect);
+    }
+    // bytes that fit neither field survive a round trip rather than being clamped
+    assert_eq!(LedMode::from_byte(0x7f), LedMode::Unknown(0x7f));
+    assert_eq!(LedMode::Unknown(0x7f).to_byte(), 0x7f);
+}
+
+/// The capture that identified which record drives which LED: the scroll wheel
+/// was set to red on its own, leaving the logo dark.
+#[test]
+fn wheel_and_logo_map_to_the_right_records() {
+    let p = Profile::decode(&fixture("profile1-split-leds")).unwrap();
+    assert_eq!((p.wheel().r, p.wheel().g, p.wheel().b), (0, 0, 0));
+    assert_eq!((p.logo().r, p.logo().g, p.logo().b), (255, 0, 0));
+
+    let mut p2 = p.clone();
+    p2.set_wheel_colour(1, 2, 3);
+    p2.set_logo_colour(4, 5, 6);
+    let out = p2.encode().unwrap();
+    assert_eq!(&out[39..42], &[1, 2, 3], "wheel lives at [39]");
+    assert_eq!(&out[43..46], &[4, 5, 6], "logo lives at [43]");
+}
+
+/// The three DPI slots are not evenly spaced -- other fields sit between them --
+/// so pin the offsets rather than trusting a stride.
+#[test]
+fn dpi_steps_write_to_their_captured_offsets() {
+    let mut p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    p.dpi = [
+        DpiStep::linked(1000),
+        DpiStep::linked(2000),
+        DpiStep::linked(3000),
+    ];
+    let out = p.encode().unwrap();
+    for (offset, value) in [(68usize, 1000u16), (77, 2000), (98, 3000)] {
+        assert_eq!(
+            u16::from_le_bytes([out[offset], out[offset + 1]]),
+            value,
+            "X at [{offset}]"
+        );
+        assert_eq!(
+            u16::from_le_bytes([out[offset + 2], out[offset + 3]]),
+            value,
+            "Y at [{}]",
+            offset + 2
+        );
+    }
+    assert_eq!(Profile::decode(&out).unwrap().dpi, p.dpi);
+}
+
+/// Angle snapping is 0-15 and angle tuning is a signed -30..=30; both are
+/// rejected outside those ranges rather than silently wrapping into the blob.
+#[test]
+fn sensor_settings_round_trip() {
+    let mut p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    p.angle_snapping = 15;
+    p.angle_tuning = -30;
+    p.polling = Some(PollingRate::Hz125);
+    let out = p.encode().unwrap();
+    let back = Profile::decode(&out).unwrap();
+    assert_eq!(back.angle_snapping, 15);
+    assert_eq!(back.angle_tuning, -30);
+    assert_eq!(back.polling, Some(PollingRate::Hz125));
+}
+
+/// Lift-off distance maps 1:1 onto the vendor slider's 31 steps. The vendor
+/// app's "pointer speed" control writes nothing to the device -- it is an OS
+/// setting -- so it has no field here by design.
+#[test]
+fn lift_off_round_trips_and_is_range_checked() {
+    let mut p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    for value in [1u8, 15, 31] {
+        p.lift_off = value;
+        let out = p.encode().unwrap();
+        assert_eq!(out[86], value, "lift-off lives at [86]");
+        assert_eq!(Profile::decode(&out).unwrap().lift_off, value);
+    }
+    p.lift_off = 0;
+    assert!(p.encode().is_err(), "0 is below the slider's range");
+    p.lift_off = 32;
+    assert!(p.encode().is_err(), "32 is above the slider's range");
+}
+
+/// The surface score curve was fitted to the vendor tool's own output: the same
+/// measurement was run across five surfaces while capturing the raw byte behind
+/// each displayed score.
+#[test]
+fn surface_score_matches_the_vendor_tool() {
+    use castty::hardware::surface_score;
+    for (raw, expected) in [(0u8, 0u8), (13, 2), (28, 5), (38, 7), (39, 7), (40, 7)] {
+        assert_eq!(surface_score(raw), expected, "raw {raw}");
+    }
+    // never report outside Mionix's 1-10 scale, whatever the device sends
+    assert_eq!(surface_score(255), 10);
+}
+
+/// The button table decode was settled by reassigning five buttons in the
+/// vendor software at once and matching each entry to what was set.
+#[test]
+fn button_table_matches_the_captured_assignments() {
+    use castty::hardware::{Button, ButtonAction, BUTTONS};
+    let p = Profile::decode(&fixture("profile2-buttons")).unwrap();
+
+    let expected = [
+        (Button::Left, ButtonAction::Mouse(0x01)),   // untouched
+        (Button::Right, ButtonAction::Disabled),     // set to "disable button"
+        (Button::WheelClick, ButtonAction::Key(0x1a)), // single key: w
+        (Button::SideFront, ButtonAction::Scroll(1)),  // scroll up
+        (Button::SideRear, ButtonAction::Scroll(-1)),  // scroll down
+        (Button::Dpi, ButtonAction::ProfileSwitch(0xf1)), // profile switch
+    ];
+    for (i, (button, action)) in expected.iter().enumerate() {
+        assert_eq!(BUTTONS[i], *button);
+        assert_eq!(p.buttons[i], *action, "{}", button.label());
+    }
+    assert_eq!(p.encode().unwrap(), fixture("profile2-buttons"));
+}
+
+#[test]
+fn button_actions_round_trip_through_bytes() {
+    use castty::hardware::ButtonAction;
+    for action in [
+        ButtonAction::Mouse(0x04),
+        ButtonAction::Scroll(1),
+        ButtonAction::Scroll(-1),
+        ButtonAction::Key(0x1a),
+        ButtonAction::ProfileSwitch(0xf1),
+        ButtonAction::DpiSwitch(0xf1),
+        ButtonAction::Disabled,
+        ButtonAction::Unknown(0x42, 0x99),
+    ] {
+        let (k, p) = action.to_bytes();
+        assert_eq!(ButtonAction::from_bytes(k, p), action);
+    }
+}
+
+/// Factory assignments, including the DPI button's non-obvious 0x10/0x08 order
+/// for the two side buttons.
+#[test]
+fn factory_buttons_are_the_defaults() {
+    use castty::hardware::BUTTONS;
+    let p = Profile::decode(&fixture("factory-default-p0")).unwrap();
+    for (i, button) in BUTTONS.iter().enumerate() {
+        assert_eq!(p.buttons[i], button.default_action(), "{}", button.label());
+    }
+}

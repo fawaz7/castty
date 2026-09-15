@@ -1,0 +1,4 @@
+# Mionix Castor (22d4:1316) — grant the logged-in user access to the
+# configuration HID interface so castty can run without root.
+KERNEL=="hidraw*", SUBSYSTEM=="hidraw", ATTRS{idVendor}=="22d4", ATTRS{idProduct}=="1316", TAG+="uaccess"
+SUBSYSTEM=="usb", ATTRS{idVendor}=="22d4", ATTRS{idProduct}=="1316", TAG+="uaccess"

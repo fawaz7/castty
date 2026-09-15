@@ -1,0 +1,20 @@
+[package]
+name = "castty"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0"
+description = "Linux configuration tool for the Mionix Castor mouse"
+
+[dependencies]
+libc = "0.2"
+gtk4 = { version = "0.9", features = ["v4_10"] }
+libadwaita = { version = "0.7", features = ["v1_5"] }
+# GTK removed glib's sync channel; this is how worker results reach the main loop
+async-channel = "2"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+# panic stays "unwind" deliberately: hardware reads run on background threads and
+# a panic there must kill only that thread, not take down the window.

@@ -1,0 +1,8 @@
+/target
+__pycache__/
+*.pyc
+
+# Vendor binaries: redistributing Mionix's software is not ours to do.
+# Keep them locally for capture work; they are not part of the project.
+/CASTOR+Software+V1.44.zip
+/CastorPROSoftwareSetupV1.00.exe
