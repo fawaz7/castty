@@ -285,13 +285,15 @@ fn button_actions_round_trip_through_bytes() {
         ButtonAction::Scroll(1),
         ButtonAction::Scroll(-1),
         ButtonAction::Key(0x1a),
+        ButtonAction::Macro { ptr: 800, events: 6 },
+        ButtonAction::ProfileSwitch(0xf0),
         ButtonAction::ProfileSwitch(0xf1),
+        ButtonAction::ProfileSwitch(0xf2),
         ButtonAction::DpiSwitch(0xf1),
         ButtonAction::Disabled,
         ButtonAction::Unknown(0x42, 0x99),
     ] {
-        let (k, p) = action.to_bytes();
-        assert_eq!(ButtonAction::from_bytes(k, p), action);
+        assert_eq!(ButtonAction::from_entry(&action.to_entry()), action);
     }
 }
 
@@ -328,4 +330,55 @@ fn hid_keycodes_match_the_standard_table() {
     assert_eq!(keycode::from_keyval('W' as u32), keycode::from_keyval('w' as u32));
     // unmapped keys are refused rather than stored as something meaningless
     assert_eq!(keycode::from_keyval(0xffe1), None); // Shift_L
+}
+
+/// Macros were captured by recording `a b c` on one button and `a`-`f` on
+/// another, which pins the event size, the press/release pairing, and the fact
+/// that the pointer is relative to the payload at [16] rather than the blob.
+#[test]
+fn macros_decode_from_the_captured_profile() {
+    use castty::hardware::ButtonAction;
+    let p = Profile::decode(&fixture("profile1-macros")).unwrap();
+
+    let front = p.buttons[3];
+    let rear = p.buttons[4];
+    assert_eq!(front, ButtonAction::Macro { ptr: 800, events: 6 });
+    assert_eq!(rear, ButtonAction::Macro { ptr: 849, events: 12 });
+
+    // three keys, each recorded as a press and a release
+    let a = p.macro_events(front);
+    assert_eq!(a.len(), 6);
+    let typed: Vec<char> = a
+        .iter()
+        .filter(|e| e.pressed)
+        .map(|e| (b'a' + e.key - 0x04) as char)
+        .collect();
+    assert_eq!(typed, ['a', 'b', 'c']);
+    assert!(a.iter().all(|e| e.delay == [0, 0, 0]), "recorded with delays off");
+
+    let b = p.macro_events(rear);
+    assert_eq!(b.len(), 12);
+    let typed: Vec<char> = b
+        .iter()
+        .filter(|e| e.pressed)
+        .map(|e| (b'a' + e.key - 0x04) as char)
+        .collect();
+    assert_eq!(typed, ['a', 'b', 'c', 'd', 'e', 'f']);
+
+    // macros are packed with a 7-byte terminator between them
+    assert_eq!(849, 800 + 7 * (6 + 1));
+    assert_eq!(p.encode().unwrap(), fixture("profile1-macros"));
+}
+
+#[test]
+fn macro_events_round_trip() {
+    use castty::hardware::MacroEvent;
+    for event in [
+        MacroEvent { key: 0x04, pressed: true, delay: [0, 0, 0] },
+        MacroEvent { key: 0x1a, pressed: false, delay: [1, 2, 3] },
+    ] {
+        assert_eq!(MacroEvent::from_bytes(&event.to_bytes()), Some(event));
+    }
+    // the inter-macro terminator is not an event
+    assert_eq!(MacroEvent::from_bytes(&[0u8; 7]), None);
 }

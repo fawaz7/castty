@@ -37,6 +37,7 @@ const ASSIGN_KEY: &str = "Set a key\u{2026}";
 fn describe(action: ButtonAction) -> Option<String> {
     match action {
         ButtonAction::Key(code) => Some(format!("Key: {}", keycode::label(code))),
+        ButtonAction::Macro { events, .. } => Some(format!("Macro ({events} events)")),
         ButtonAction::Unknown(kind, param) => {
             Some(format!("Unrecognised (0x{kind:02x} 0x{param:02x})"))
         }

@@ -67,9 +67,12 @@ pub mod offset {
     pub const BUTTON_COUNT: usize = 6;
     pub const BUTTON_TERMINATOR: usize = 6;
 
-    /// Everything from here to the end is zero in all captures so far and is
-    /// presumed to be macro storage. Preserved verbatim, never synthesised.
-    pub const MACRO_REGION: usize = 160;
+    /// Macro event storage. Pointers in button entries are relative to the
+    /// profile payload at `[16]`, so an event block lives at `PAYLOAD + ptr`.
+    pub const PAYLOAD: usize = 16;
+    /// Where the vendor software starts allocating macro data.
+    pub const MACRO_BASE_PTR: u16 = 800;
+    pub const MACRO_EVENT_LEN: usize = 7;
 
     /// Identify response fields (report 0x60, command 0x02).
     pub const ID_FIRMWARE: usize = 0x10;

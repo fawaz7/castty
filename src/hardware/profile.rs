@@ -258,6 +258,44 @@ impl Button {
     }
 }
 
+/// One step of a macro. Each keypress records as two events, a press and a
+/// release, matching how the vendor editor captures them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MacroEvent {
+    /// HID usage code of the key.
+    pub key: u8,
+    pub pressed: bool,
+    /// Delay before the event. Presumed; always zero in the capture, which was
+    /// recorded with the vendor editor's delay options switched off.
+    pub delay: [u8; 3],
+}
+
+impl MacroEvent {
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        // Event type 0x01 is a key event; nothing else has been captured.
+        if b.len() < offset::MACRO_EVENT_LEN || b[0] != 0x01 {
+            return None;
+        }
+        Some(MacroEvent {
+            key: b[1],
+            pressed: b[3] == 0,
+            delay: [b[4], b[5], b[6]],
+        })
+    }
+
+    pub fn to_bytes(self) -> [u8; offset::MACRO_EVENT_LEN] {
+        [
+            0x01,
+            self.key,
+            0x00,
+            u8::from(!self.pressed),
+            self.delay[0],
+            self.delay[1],
+            self.delay[2],
+        ]
+    }
+}
+
 /// What a button does. Stored as `<type> <param>`; `Unknown` preserves anything
 /// we cannot interpret so it survives a read/modify/write.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +306,8 @@ pub enum ButtonAction {
     Scroll(i8),
     /// Single keystroke; param is a HID usage code.
     Key(u8),
+    /// A recorded macro: where its events live and how many there are.
+    Macro { ptr: u16, events: u8 },
     /// Cycle profiles. This is why the mouse can switch profiles unaided.
     ProfileSwitch(u8),
     /// Cycle DPI steps.
@@ -276,29 +316,49 @@ pub enum ButtonAction {
     Unknown(u8, u8),
 }
 
+/// Byte 6 of every button entry, in every capture.
+const BUTTON_ENTRY_TAIL: u8 = 0x0f;
+
 impl ButtonAction {
-    pub fn from_bytes(kind: u8, param: u8) -> Self {
-        match kind {
-            0x00 => ButtonAction::Mouse(param),
-            0x01 => ButtonAction::Scroll(param as i8),
-            0x02 => ButtonAction::Key(param),
-            0x08 => ButtonAction::ProfileSwitch(param),
-            0x09 => ButtonAction::DpiSwitch(param),
+    /// Decode a whole 7-byte entry. Macros need more than the first two bytes,
+    /// which is why this works on the entry rather than a type/param pair.
+    pub fn from_entry(b: &[u8]) -> Self {
+        if b.len() < offset::BUTTON_ENTRY_LEN {
+            return ButtonAction::Disabled;
+        }
+        match b[0] {
+            0x00 => ButtonAction::Mouse(b[1]),
+            0x01 => ButtonAction::Scroll(b[1] as i8),
+            0x02 => ButtonAction::Key(b[1]),
+            0x03 => ButtonAction::Macro {
+                ptr: u16::from_le_bytes([b[2], b[3]]),
+                events: b[4],
+            },
+            0x08 => ButtonAction::ProfileSwitch(b[1]),
+            0x09 => ButtonAction::DpiSwitch(b[1]),
             0xff => ButtonAction::Disabled,
-            other => ButtonAction::Unknown(other, param),
+            other => ButtonAction::Unknown(other, b[1]),
         }
     }
 
-    pub fn to_bytes(self) -> (u8, u8) {
+    pub fn to_entry(self) -> [u8; offset::BUTTON_ENTRY_LEN] {
+        let mut out = [0u8; offset::BUTTON_ENTRY_LEN];
+        out[offset::BUTTON_ENTRY_LEN - 1] = BUTTON_ENTRY_TAIL;
         match self {
-            ButtonAction::Mouse(p) => (0x00, p),
-            ButtonAction::Scroll(d) => (0x01, d as u8),
-            ButtonAction::Key(k) => (0x02, k),
-            ButtonAction::ProfileSwitch(p) => (0x08, p),
-            ButtonAction::DpiSwitch(p) => (0x09, p),
-            ButtonAction::Disabled => (0xff, 0x00),
-            ButtonAction::Unknown(t, p) => (t, p),
+            ButtonAction::Mouse(p) => (out[0], out[1]) = (0x00, p),
+            ButtonAction::Scroll(d) => (out[0], out[1]) = (0x01, d as u8),
+            ButtonAction::Key(k) => (out[0], out[1]) = (0x02, k),
+            ButtonAction::Macro { ptr, events } => {
+                out[0] = 0x03;
+                out[2..4].copy_from_slice(&ptr.to_le_bytes());
+                out[4] = events;
+            }
+            ButtonAction::ProfileSwitch(p) => (out[0], out[1]) = (0x08, p),
+            ButtonAction::DpiSwitch(p) => (out[0], out[1]) = (0x09, p),
+            ButtonAction::Disabled => out[0] = 0xff,
+            ButtonAction::Unknown(t, p) => (out[0], out[1]) = (t, p),
         }
+        out
     }
 }
 
@@ -379,7 +439,7 @@ impl Profile {
             lift_off: raw[offset::LIFT_OFF],
             buttons: std::array::from_fn(|i| {
                 let base = offset::BUTTON_TABLE + i * offset::BUTTON_ENTRY_LEN;
-                ButtonAction::from_bytes(raw[base], raw[base + 1])
+                ButtonAction::from_entry(&raw[base..base + offset::BUTTON_ENTRY_LEN])
             }),
         })
     }
@@ -440,9 +500,7 @@ impl Profile {
 
         for (i, action) in self.buttons.iter().enumerate() {
             let base = offset::BUTTON_TABLE + i * offset::BUTTON_ENTRY_LEN;
-            let (kind, param) = action.to_bytes();
-            out[base] = kind;
-            out[base + 1] = param;
+            out[base..base + offset::BUTTON_ENTRY_LEN].copy_from_slice(&action.to_entry());
         }
         Ok(out)
     }
@@ -488,5 +546,24 @@ impl Profile {
 
     pub fn raw(&self) -> &[u8] {
         &self.raw
+    }
+
+    /// Read the events of a macro assigned to a button.
+    ///
+    /// Events live at `PAYLOAD + ptr`; the pointer is relative to the start of
+    /// the profile payload, not the blob.
+    pub fn macro_events(&self, action: ButtonAction) -> Vec<MacroEvent> {
+        let ButtonAction::Macro { ptr, events } = action else {
+            return Vec::new();
+        };
+        let start = offset::PAYLOAD + ptr as usize;
+        (0..events as usize)
+            .filter_map(|i| {
+                let at = start + i * offset::MACRO_EVENT_LEN;
+                self.raw
+                    .get(at..at + offset::MACRO_EVENT_LEN)
+                    .and_then(MacroEvent::from_bytes)
+            })
+            .collect()
     }
 }

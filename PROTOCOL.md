@@ -168,12 +168,14 @@ Types, from a capture that reassigned five buttons at once:
 | `0x00` | Standard mouse button | Button bitmask: `01` left, `02` right, `04` middle, `08` side, `10` side |
 | `0x01` | Scroll | Signed direction: `01` up, `ff` (-1) down |
 | `0x02` | Single key | **HID usage code** — `0x1a` is `w` |
-| `0x08` | **Profile switch** | `f1` for the "roll" variant |
-| `0x09` | DPI switch | `f1` for the "roll" variant |
+| `0x03` | **Macro** | See the macro section; the entry carries a pointer and event count |
+| `0x08` | **Profile switch** | `f0` up, `f2` down, `f1` roll |
+| `0x09` | DPI switch | `f1` roll; up/down presumably `f0`/`f2` by analogy, untested |
 | `0xff` | Disabled | `00` |
 
-The vendor UI also offers up/down variants of profile and DPI switching, and macro assignment; only
-the "roll" variants and the types above have been captured so far.
+Profile switch directions were captured by assigning each in turn: up, down, then roll, producing
+`f0`, `f2`, `f1`. DPI switching is assumed to use the same three parameters but only `f1` has been
+seen.
 
 **The mouse can switch its own profiles.** Profile switch is a button function (`type 0x08`), so no
 host software is needed once it is assigned — which is why profiles are worth supporting properly.
@@ -309,11 +311,49 @@ Consequence for `castty`: the device cannot be queried for its current configura
 application must persist its own state and treat the factory-default blob as the starting point. This
 is what the vendor app does too.
 
-#### Macros — not yet mapped
+#### Macros
 
-The final 880 bytes of the blob (`[160..1040]`) are all zero in every capture so far, and are almost
-certainly macro storage. The vendor macro editor has substantial UI (event capture, per-event delays)
-and has been deliberately deferred. Nothing else depends on it.
+A button assigned a macro uses more of its 7-byte entry:
+
+```
+03 00 <ptr lo> <ptr hi> <event count> 00 0f
+```
+
+- `type` `0x03` means macro.
+- `ptr` is LE16. **The event data lives at blob offset `16 + ptr`** — the pointer is relative to the
+  start of the profile payload at `[16]`, not to the blob.
+- `event count` counts individual events, and each keypress is **two** events (press and release).
+
+Each event is 7 bytes:
+
+```
+01 <hid usage> 00 <0 = press, 1 = release> <delay, 3 bytes?>
+```
+
+Macros are packed sequentially and each is followed by a **7-byte zero terminator**, so the next
+macro's pointer is `ptr + 7 * (count + 1)`. Observed: a 3-key macro at `ptr` 800 (6 events) is
+followed by a 6-key macro at `ptr` 849 = 800 + 7 x 7.
+
+The first macro was allocated at `ptr` 800, i.e. blob offset 816, leaving `[816..1040]` — 224 bytes,
+or 32 event slots — for macro storage. Everything before that in the tail stayed zero, so 816 appears
+to be the base of the macro area.
+
+Worked example, a macro of `a` `b` `c`:
+
+```
+01 04 00 00 00 00 00   a press
+01 04 00 01 00 00 00   a release
+01 05 00 00 00 00 00   b press
+01 05 00 01 00 00 00   b release
+01 06 00 00 00 00 00   c press
+01 06 00 01 00 00 00   c release
+00 00 00 00 00 00 00   terminator
+```
+
+**The last three bytes are presumed to be a delay** and were zero throughout, because the vendor
+editor's "record delay" and "record hold" checkboxes were off, which it displays as 0 ms. Their
+encoding is unverified. Event type `0x01` is presumably "keyboard"; mouse events in a macro have not
+been captured.
 
 ### Apply sequence (verified by replay)
 
