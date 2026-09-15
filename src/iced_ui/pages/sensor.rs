@@ -260,7 +260,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             } else {
                 "poor tracking"
             };
-            format!("{score} / 10 — {verdict}")
+            format!("{score} / 10: {verdict}")
         }
         (None, None) => "Not measured yet".to_string(),
     };

@@ -215,7 +215,7 @@ impl Castty {
             Message::Tick => {}
             Message::Device(update) => match update {
                 worker::Update::Connected(id) => {
-                    self.status = format!("Connected — firmware {:x}.{:02x}", id.firmware >> 8, id.firmware & 0xff);
+                    self.status = format!("Connected, firmware {:x}.{:02x}", id.firmware >> 8, id.firmware & 0xff);
                 }
                 worker::Update::Disconnected(why) => self.status = why,
                 worker::Update::Applied => {
