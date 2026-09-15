@@ -2,17 +2,17 @@
 //!
 //! The six entries are a fixed order in the profile blob. Assignments we can
 //! express are offered as a list; anything captured that we cannot yet build
-//! (a single keystroke, a macro, an unrecognised type) is preserved and shown
-//! as the current value rather than being silently replaced.
+//! (a macro, an unrecognised type) is preserved and shown as the current value
+//! rather than being silently replaced.
 
-use crate::hardware::{keycode, Button, ButtonAction, Profile, BUTTONS};
+use crate::hardware::{keycode, ButtonAction, Profile, BUTTONS};
 use gtk4 as gtk;
 use gtk::glib;
 use gtk::glib::translate::IntoGlib;
 use gtk::prelude::*;
 use libadwaita as adw;
 use adw::prelude::*;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 /// Assignments the UI can construct, in dropdown order.
@@ -30,7 +30,8 @@ const CHOICES: [(&str, ButtonAction); 10] = [
 ];
 
 /// Sentinel row that opens the key-capture dialog instead of assigning.
-const ASSIGN_KEY: &str = "Single key\u{2026}";
+/// It is always the last entry, so a key can be reassigned as often as you like.
+const ASSIGN_KEY: &str = "Set a key\u{2026}";
 
 /// How an action outside `CHOICES` is described back to the user.
 fn describe(action: ButtonAction) -> Option<String> {
@@ -41,6 +42,20 @@ fn describe(action: ButtonAction) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// The dropdown for one row: the fixed choices, the current value when it is
+/// not one of them, and always the "set a key" action last.
+fn build_model(extra: Option<&str>) -> (gtk::StringList, Option<u32>, u32) {
+    let mut labels: Vec<String> = CHOICES.iter().map(|(n, _)| (*n).to_string()).collect();
+    let extra_index = extra.map(|text| {
+        labels.push(text.to_string());
+        labels.len() as u32 - 1
+    });
+    labels.push(ASSIGN_KEY.to_string());
+    let assign_index = labels.len() as u32 - 1;
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    (gtk::StringList::new(&refs), extra_index, assign_index)
 }
 
 /// Modal that waits for a keypress and reports its HID usage code.
@@ -92,10 +107,12 @@ fn capture_key<F: Fn(u8) + 'static>(parent: &gtk::Window, on_key: F) {
 pub struct ButtonsPage {
     pub widget: adw::PreferencesPage,
     rows: Vec<adw::ComboRow>,
-    /// Action to keep for each row when it is showing a preserved value.
-    preserved: Rc<RefCell<Vec<Option<ButtonAction>>>>,
-    /// Set while `load` is populating, so it does not fire user-change logic.
-    loading: Rc<std::cell::Cell<bool>>,
+    /// Current action per row when it is not one of `CHOICES`.
+    extra: Rc<RefCell<Vec<Option<ButtonAction>>>>,
+    /// Selection to fall back to when the capture dialog is cancelled.
+    previous: Rc<RefCell<Vec<u32>>>,
+    /// Set while `load` populates, so it does not fire user-change logic.
+    loading: Rc<Cell<bool>>,
 }
 
 impl Default for ButtonsPage {
@@ -116,8 +133,6 @@ impl ButtonsPage {
             )
             .build();
 
-        // Numbers match the callouts drawn on the preview, so a row can be tied
-        // to a physical button without having to guess which is which.
         let rows: Vec<adw::ComboRow> = BUTTONS
             .iter()
             .enumerate()
@@ -131,15 +146,17 @@ impl ButtonsPage {
             .collect();
         page.add(&group);
 
+        let count = rows.len();
         ButtonsPage {
             widget: page,
             rows,
-            preserved: Rc::new(RefCell::new(vec![None; BUTTONS.len()])),
-            loading: Rc::new(std::cell::Cell::new(false)),
+            extra: Rc::new(RefCell::new(vec![None; count])),
+            previous: Rc::new(RefCell::new(vec![0; count])),
+            loading: Rc::new(Cell::new(false)),
         }
     }
 
-    /// Wire the "Single key..." entry. Needs the window to parent the dialog.
+    /// Wire the "set a key" entry. Needs the window to parent the dialog.
     pub fn connect_key_assignment<F: Fn() + Clone + 'static>(
         &self,
         window: &gtk::Window,
@@ -147,86 +164,101 @@ impl ButtonsPage {
     ) {
         for (i, row) in self.rows.iter().enumerate() {
             let window = window.clone();
-            let preserved = self.preserved.clone();
+            let extra = self.extra.clone();
+            let previous = self.previous.clone();
             let loading = self.loading.clone();
-            let row_weak = row.downgrade();
             let changed = changed.clone();
             row.connect_selected_notify(move |r| {
                 if loading.get() {
                     return;
                 }
-                let model = r.model();
-                let Some(list) = model.and_downcast::<gtk::StringList>() else {
+                let Some(list) = r.model().and_downcast::<gtk::StringList>() else {
                     return;
                 };
                 if list.string(r.selected()).as_deref() != Some(ASSIGN_KEY) {
+                    // An ordinary choice: remember it as the fallback.
+                    previous.borrow_mut()[i] = r.selected();
                     return;
                 }
-                let preserved = preserved.clone();
-                let row_weak = row_weak.clone();
+
+                // Clones for the dialog callback; the originals stay available
+                // for the cancel path below.
+                let dlg_extra = extra.clone();
+                let dlg_previous = previous.clone();
+                let dlg_loading = loading.clone();
                 let changed = changed.clone();
+                let row = r.clone();
                 capture_key(&window, move |usage| {
-                    preserved.borrow_mut()[i] = Some(ButtonAction::Key(usage));
-                    if let Some(row) = row_weak.upgrade() {
-                        // Re-label the preserved entry to the captured key.
-                        let mut labels: Vec<String> =
-                            CHOICES.iter().map(|(n, _)| (*n).to_string()).collect();
-                        labels.push(format!("Key: {}", keycode::label(usage)));
-                        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-                        row.set_model(Some(&gtk::StringList::new(&refs)));
-                        row.set_selected(labels.len() as u32 - 1);
-                    }
+                    let action = ButtonAction::Key(usage);
+                    dlg_extra.borrow_mut()[i] = Some(action);
+                    let text = describe(action).unwrap_or_default();
+                    let (model, extra_index, _) = build_model(Some(&text));
+                    dlg_loading.set(true);
+                    row.set_model(Some(&model));
+                    let selected = extra_index.unwrap_or(0);
+                    row.set_selected(selected);
+                    dlg_previous.borrow_mut()[i] = selected;
+                    dlg_loading.set(false);
                     changed();
                 });
+
+                // Cancelling leaves the sentinel selected, which is not an
+                // assignment; restore whatever was chosen before.
+                let fallback = previous.borrow()[i];
+                {
+                    let loading_guard = loading.clone();
+                    let row = r.clone();
+                    glib::idle_add_local_once(move || {
+                        if let Some(list) = row.model().and_downcast::<gtk::StringList>() {
+                            if list.string(row.selected()).as_deref() == Some(ASSIGN_KEY) {
+                                loading_guard.set(true);
+                                row.set_selected(fallback);
+                                loading_guard.set(false);
+                            }
+                        }
+                    });
+                }
             });
         }
     }
 
     pub fn load(&self, profile: &Profile) {
         self.loading.set(true);
-        let mut preserved = self.preserved.borrow_mut();
-        for (i, row) in self.rows.iter().enumerate() {
-            let action = profile.buttons[i];
-            let extra = describe(action);
-            preserved[i] = extra.as_ref().map(|_| action);
+        {
+            let mut extra = self.extra.borrow_mut();
+            let mut previous = self.previous.borrow_mut();
+            for (i, row) in self.rows.iter().enumerate() {
+                let action = profile.buttons[i];
+                let text = describe(action);
+                extra[i] = text.as_ref().map(|_| action);
 
-            let mut labels: Vec<String> =
-                CHOICES.iter().map(|(name, _)| (*name).to_string()).collect();
-            match &extra {
-                Some(text) => labels.push(text.clone()),
-                None => labels.push(ASSIGN_KEY.to_string()),
+                let (model, extra_index, _) = build_model(text.as_deref());
+                row.set_model(Some(&model));
+
+                let index = match extra_index {
+                    Some(idx) => idx,
+                    None => CHOICES
+                        .iter()
+                        .position(|(_, a)| *a == action)
+                        .unwrap_or(0) as u32,
+                };
+                row.set_selected(index);
+                previous[i] = index;
             }
-            let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-            row.set_model(Some(&gtk::StringList::new(&refs)));
-
-            let index = match extra {
-                // A preserved value is always the last entry.
-                Some(_) => labels.len() - 1,
-                None => CHOICES
-                    .iter()
-                    .position(|(_, a)| *a == action)
-                    .unwrap_or_else(|| {
-                        CHOICES
-                            .iter()
-                            .position(|(_, a)| *a == Button::Left.default_action())
-                            .unwrap_or(0)
-                    }),
-            };
-            row.set_selected(index as u32);
         }
-        drop(preserved);
         self.loading.set(false);
     }
 
     pub fn store(&self, profile: &mut Profile) {
-        let preserved = self.preserved.borrow();
+        let extra = self.extra.borrow();
         for (i, row) in self.rows.iter().enumerate() {
             let index = row.selected() as usize;
             profile.buttons[i] = match CHOICES.get(index) {
                 Some((_, action)) => *action,
-                // Past the end of the list is either a captured key or a value
-                // we preserved because we cannot build it.
-                None => preserved[i].unwrap_or(profile.buttons[i]),
+                // Past the fixed choices: either a captured key or a value we
+                // preserved because we cannot build it. Never the sentinel,
+                // which is restored to the previous selection on cancel.
+                None => extra[i].unwrap_or(profile.buttons[i]),
             };
         }
     }
