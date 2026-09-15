@@ -83,6 +83,7 @@ pub enum Message {
     Device(worker::Update),
     Lighting(pages::lighting::Message),
     Sensor(pages::sensor::Message),
+    Buttons(pages::buttons::Message),
     About(pages::about::Message),
     Tick,
 }
@@ -90,7 +91,6 @@ pub enum Message {
 pub struct Castty {
     profiles: Vec<Profile>,
     current: usize,
-    #[allow(dead_code)]
     library: Library,
     page: Page,
     dirty: bool,
@@ -100,6 +100,7 @@ pub struct Castty {
     art: Rc<art::Art>,
     lighting: pages::lighting::State,
     sensor: pages::sensor::State,
+    buttons: pages::buttons::State,
     started: Instant,
 }
 
@@ -110,15 +111,18 @@ impl Castty {
         let profiles = config::load_all();
         let lighting = pages::lighting::State::from_profile(&profiles[0]);
         let sensor = pages::sensor::State::from_profile(&profiles[0]);
+        let library = Library::load();
+        let buttons = pages::buttons::State::from_profile(&profiles[0], &library);
         (
             Castty {
                 lighting,
                 sensor,
+                buttons,
                 art: Rc::new(art::Art::load()),
                 started: Instant::now(),
                 profiles,
                 current: 0,
-                library: Library::load(),
+                library,
                 page: Page::Lighting,
                 dirty: false,
                 status: "Looking for the mouse\u{2026}".into(),
@@ -141,10 +145,16 @@ impl Castty {
                     self.current = index;
                     self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
                     self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
+                    self.buttons =
+                        pages::buttons::State::from_profile(&self.profiles[index], &self.library);
                 }
             }
             Message::Lighting(message) => {
                 self.lighting.update(message);
+                self.dirty = true;
+            }
+            Message::Buttons(message) => {
+                self.buttons.update(message);
                 self.dirty = true;
             }
             Message::Sensor(message) => {
@@ -178,6 +188,7 @@ impl Castty {
             Message::Apply => {
                 self.lighting.apply_to(&mut self.profiles[self.current]);
                 self.sensor.apply_to(&mut self.profiles[self.current]);
+                self.buttons.apply_to(&mut self.profiles[self.current], &self.library);
                 let profile = self.profiles[self.current].clone();
                 self.worker.send(worker::Job::WriteProfile(Box::new(profile)));
                 self.dirty = false;
@@ -297,6 +308,9 @@ impl Castty {
         let content: Element<'_, Message> = match self.page {
             Page::Lighting => pages::lighting::view(&self.lighting, &palette).map(Message::Lighting),
             Page::Sensor => pages::sensor::view(&self.sensor, &palette).map(Message::Sensor),
+            Page::Buttons => {
+                pages::buttons::view(&self.buttons, &self.library, &palette).map(Message::Buttons)
+            }
             Page::About => {
                 pages::about::view(self.settings.theme, self.settings.accent, &palette)
                     .map(Message::About)

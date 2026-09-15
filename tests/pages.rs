@@ -124,3 +124,68 @@ fn analyzer_ignores_a_second_start_mid_countdown() {
     assert!(!state.update(sensor::Message::AnalyzeStarted));
     assert_eq!(state.countdown, Some(9));
 }
+
+use castty::hardware::{ButtonAction, MacroEvent, BUTTONS};
+use castty::iced_ui::pages::buttons;
+use castty::macros::{Library, NamedMacro, Timing};
+
+fn library_with(name: &str) -> Library {
+    let mut library = Library::default();
+    library.put(NamedMacro {
+        name: name.to_string(),
+        timing: Timing::None,
+        events: vec![MacroEvent { key: 0x04, pressed: true, delay_ms: 0 }],
+    });
+    library
+}
+
+/// A macro on the device is only an event list, so it is recognised by matching
+/// those events against the library.
+#[test]
+fn buttons_recognise_a_library_macro_by_its_events() {
+    let library = library_with("Reload");
+    let mut profile = factory();
+    let mut macros: [Option<castty::hardware::Macro>; 6] = Default::default();
+    macros[3] = Some(library.find("Reload").unwrap().to_device());
+    profile.set_macros(&macros).unwrap();
+
+    let state = buttons::State::from_profile(&profile, &library);
+    assert_eq!(state.slots[3], buttons::Slot::Library("Reload".into()));
+}
+
+/// A macro that is not in the library stays on the mouse; it must be carried
+/// through rather than wiped.
+#[test]
+fn buttons_keep_a_macro_that_is_not_in_the_library() {
+    let library = Library::default();
+    let mut profile = factory();
+    let mut macros: [Option<castty::hardware::Macro>; 6] = Default::default();
+    macros[4] = Some(castty::hardware::Macro {
+        events: vec![MacroEvent { key: 0x05, pressed: true, delay_ms: 0 }],
+        hold: false,
+    });
+    profile.set_macros(&macros).unwrap();
+
+    let state = buttons::State::from_profile(&profile, &library);
+    assert_eq!(state.slots[4], buttons::Slot::Keep);
+
+    // Applying must not clear it.
+    let mut written = profile.clone();
+    state.apply_to(&mut written, &library);
+    assert!(matches!(written.buttons[4], ButtonAction::Macro { .. }));
+}
+
+#[test]
+fn buttons_round_trip_plain_actions() {
+    let library = Library::default();
+    let mut profile = factory();
+    let mut state = buttons::State::from_profile(&profile, &library);
+    state.slots[1] = buttons::Slot::Action(ButtonAction::Disabled);
+    state.slots[5] = buttons::Slot::Action(ButtonAction::ProfileSwitch(0xf0));
+    state.apply_to(&mut profile, &library);
+
+    let back = buttons::State::from_profile(&profile, &library);
+    assert_eq!(back.slots[1], buttons::Slot::Action(ButtonAction::Disabled));
+    assert_eq!(back.slots[5], buttons::Slot::Action(ButtonAction::ProfileSwitch(0xf0)));
+    assert_eq!(BUTTONS.len(), 6);
+}

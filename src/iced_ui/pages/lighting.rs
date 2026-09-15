@@ -8,7 +8,7 @@ use super::super::colour_picker::{self, ColourPicker};
 use super::super::theme::Palette;
 use crate::hardware::{Effect, LedMode, Profile, EFFECTS};
 use super::super::widgets::{self, GAP};
-use iced::widget::{canvas, checkbox, column, pick_list, row, text};
+use iced::widget::{canvas, checkbox, column, pick_list, text};
 use iced::{Element, Length};
 
 /// Measured on hardware against a stopwatch, not guessed. Re-measure rather

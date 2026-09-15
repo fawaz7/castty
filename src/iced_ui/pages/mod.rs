@@ -2,5 +2,6 @@
 //! `apply_to`, `update` and `view(state, palette)`; none reaches into another.
 
 pub mod about;
+pub mod buttons;
 pub mod lighting;
 pub mod sensor;
