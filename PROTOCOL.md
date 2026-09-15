@@ -327,8 +327,14 @@ A button assigned a macro uses more of its 7-byte entry:
 Each event is 7 bytes:
 
 ```
-01 <hid usage> 00 <0 = press, 1 = release> <delay, 3 bytes?>
+01 <hid usage> 00 <0 = press, 1 = release> <delay, LE24 milliseconds>
 ```
+
+The delay is **milliseconds since the previous event**, little-endian across three bytes. On a press
+it is the gap since the last key; on a release it is how long the key was held. Verified against the
+vendor editor, which displays exactly these numbers -- a recording of `a`, `b`, `c` with deliberate
+pauses stored 2175, 119, 2701, 111, 3927, 93, matching its display of "2175 ms down, 119 ms up" and
+so on.
 
 Macros are packed sequentially and each is followed by a **7-byte zero terminator**, so the next
 macro's pointer is `ptr + 7 * (count + 1)`. Observed: a 3-key macro at `ptr` 800 (6 events) is
@@ -350,10 +356,21 @@ Worked example, a macro of `a` `b` `c`:
 00 00 00 00 00 00 00   terminator
 ```
 
-**The last three bytes are presumed to be a delay** and were zero throughout, because the vendor
-editor's "record delay" and "record hold" checkboxes were off, which it displays as 0 ms. Their
-encoding is unverified. Event type `0x01` is presumably "keyboard"; mouse events in a macro have not
-been captured.
+#### Macro playback modes
+
+The vendor editor offers "record delay" and "record hold", and they are **mutually exclusive** --
+they are two uses of the same storage, selected by **byte 1 of the button entry**:
+
+| Byte 1 | Mode | Storage |
+|---|---|---|
+| `0x00` | Timed playback | Press and release events with real millisecond deltas |
+| `0xfe` | Hold | A single press event per key, no release, all delays zero |
+
+A hold macro keeps its keys down for as long as the mouse button is held, so there is nothing to
+time and no release to record -- which is why the editor shows 0 ms for one.
+
+Event type `0x01` is "keyboard". The editor does not allow mouse clicks inside a macro, so no other
+event type exists to capture.
 
 ### Apply sequence (verified by replay)
 

@@ -285,7 +285,8 @@ fn button_actions_round_trip_through_bytes() {
         ButtonAction::Scroll(1),
         ButtonAction::Scroll(-1),
         ButtonAction::Key(0x1a),
-        ButtonAction::Macro { ptr: 800, events: 6 },
+        ButtonAction::Macro { ptr: 800, events: 6, hold: false },
+        ButtonAction::Macro { ptr: 849, events: 1, hold: true },
         ButtonAction::ProfileSwitch(0xf0),
         ButtonAction::ProfileSwitch(0xf1),
         ButtonAction::ProfileSwitch(0xf2),
@@ -342,8 +343,8 @@ fn macros_decode_from_the_captured_profile() {
 
     let front = p.buttons[3];
     let rear = p.buttons[4];
-    assert_eq!(front, ButtonAction::Macro { ptr: 800, events: 6 });
-    assert_eq!(rear, ButtonAction::Macro { ptr: 849, events: 12 });
+    assert_eq!(front, ButtonAction::Macro { ptr: 800, events: 6, hold: false });
+    assert_eq!(rear, ButtonAction::Macro { ptr: 849, events: 12, hold: false });
 
     // three keys, each recorded as a press and a release
     let a = p.macro_events(front);
@@ -354,7 +355,7 @@ fn macros_decode_from_the_captured_profile() {
         .map(|e| (b'a' + e.key - 0x04) as char)
         .collect();
     assert_eq!(typed, ['a', 'b', 'c']);
-    assert!(a.iter().all(|e| e.delay == [0, 0, 0]), "recorded with delays off");
+    assert!(a.iter().all(|e| e.delay_ms == 0), "recorded with delays off");
 
     let b = p.macro_events(rear);
     assert_eq!(b.len(), 12);
@@ -374,11 +375,52 @@ fn macros_decode_from_the_captured_profile() {
 fn macro_events_round_trip() {
     use castty::hardware::MacroEvent;
     for event in [
-        MacroEvent { key: 0x04, pressed: true, delay: [0, 0, 0] },
-        MacroEvent { key: 0x1a, pressed: false, delay: [1, 2, 3] },
+        MacroEvent { key: 0x04, pressed: true, delay_ms: 0 },
+        MacroEvent { key: 0x1a, pressed: false, delay_ms: 2175 },
+        MacroEvent { key: 0x05, pressed: true, delay_ms: MacroEvent::MAX_DELAY_MS },
     ] {
         assert_eq!(MacroEvent::from_bytes(&event.to_bytes()), Some(event));
     }
     // the inter-macro terminator is not an event
     assert_eq!(MacroEvent::from_bytes(&[0u8; 7]), None);
+}
+
+/// Delays are milliseconds since the previous event, verified against the
+/// numbers the vendor editor displayed for the same recording: `a` down after
+/// 2175 ms and held 119 ms, `b` down after 2701 ms and held 111 ms.
+#[test]
+fn macro_delays_are_milliseconds() {
+    let p = Profile::decode(&fixture("profile1-macro-timing")).unwrap();
+
+    let front = p.buttons[3];
+    let events = p.macro_events(front);
+    let timings: Vec<u32> = events.iter().map(|e| e.delay_ms).collect();
+    assert_eq!(timings, vec![2175, 119, 2701, 111, 3927, 93]);
+
+    // presses carry the gap the user paused for; releases carry the key's hold
+    // time, which is why every other value is around a tenth of a second
+    for pair in events.chunks(2) {
+        assert!(pair[0].pressed && !pair[1].pressed);
+        assert!(pair[0].delay_ms > pair[1].delay_ms);
+    }
+    assert_eq!(p.encode().unwrap(), fixture("profile1-macro-timing"));
+}
+
+/// "Record hold" makes a macro that holds its keys while the button is held:
+/// one press event, no release, no timing.
+#[test]
+fn hold_macros_are_flagged_in_the_button_entry() {
+    use castty::hardware::ButtonAction;
+    let p = Profile::decode(&fixture("profile1-macro-timing")).unwrap();
+    let rear = p.buttons[4];
+    assert_eq!(rear, ButtonAction::Macro { ptr: 849, events: 1, hold: true });
+
+    let events = p.macro_events(rear);
+    assert_eq!(events.len(), 1);
+    assert!(events[0].pressed, "hold macros record only the press");
+    assert_eq!(events[0].delay_ms, 0);
+
+    // the hold flag lives in byte 1 of the entry, which is 0 for a timed macro
+    assert_eq!(rear.to_entry()[1], 0xfe);
+    assert_eq!(p.buttons[3].to_entry()[1], 0x00);
 }

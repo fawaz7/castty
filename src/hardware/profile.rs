@@ -265,9 +265,10 @@ pub struct MacroEvent {
     /// HID usage code of the key.
     pub key: u8,
     pub pressed: bool,
-    /// Delay before the event. Presumed; always zero in the capture, which was
-    /// recorded with the vendor editor's delay options switched off.
-    pub delay: [u8; 3],
+    /// Milliseconds since the previous event. On a press this is the gap since
+    /// the last key; on a release it is how long the key was held. Verified
+    /// against the vendor editor, which displays exactly these numbers.
+    pub delay_ms: u32,
 }
 
 impl MacroEvent {
@@ -279,19 +280,23 @@ impl MacroEvent {
         Some(MacroEvent {
             key: b[1],
             pressed: b[3] == 0,
-            delay: [b[4], b[5], b[6]],
+            delay_ms: u32::from(b[4]) | u32::from(b[5]) << 8 | u32::from(b[6]) << 16,
         })
     }
 
+    /// The largest delay the three-byte field can hold, about 4.6 hours.
+    pub const MAX_DELAY_MS: u32 = 0x00ff_ffff;
+
     pub fn to_bytes(self) -> [u8; offset::MACRO_EVENT_LEN] {
+        let ms = self.delay_ms.min(Self::MAX_DELAY_MS);
         [
             0x01,
             self.key,
             0x00,
             u8::from(!self.pressed),
-            self.delay[0],
-            self.delay[1],
-            self.delay[2],
+            ms as u8,
+            (ms >> 8) as u8,
+            (ms >> 16) as u8,
         ]
     }
 }
@@ -306,8 +311,9 @@ pub enum ButtonAction {
     Scroll(i8),
     /// Single keystroke; param is a HID usage code.
     Key(u8),
-    /// A recorded macro: where its events live and how many there are.
-    Macro { ptr: u16, events: u8 },
+    /// A recorded macro: where its events live, how many there are, and whether
+    /// it plays back on a timer or holds its keys while the button is held.
+    Macro { ptr: u16, events: u8, hold: bool },
     /// Cycle profiles. This is why the mouse can switch profiles unaided.
     ProfileSwitch(u8),
     /// Cycle DPI steps.
@@ -318,6 +324,9 @@ pub enum ButtonAction {
 
 /// Byte 6 of every button entry, in every capture.
 const BUTTON_ENTRY_TAIL: u8 = 0x0f;
+/// Byte 1 of a macro entry when the macro holds its keys down for as long as
+/// the button is held, rather than replaying timed events.
+const MACRO_HOLD: u8 = 0xfe;
 
 impl ButtonAction {
     /// Decode a whole 7-byte entry. Macros need more than the first two bytes,
@@ -333,6 +342,7 @@ impl ButtonAction {
             0x03 => ButtonAction::Macro {
                 ptr: u16::from_le_bytes([b[2], b[3]]),
                 events: b[4],
+                hold: b[1] == MACRO_HOLD,
             },
             0x08 => ButtonAction::ProfileSwitch(b[1]),
             0x09 => ButtonAction::DpiSwitch(b[1]),
@@ -348,8 +358,9 @@ impl ButtonAction {
             ButtonAction::Mouse(p) => (out[0], out[1]) = (0x00, p),
             ButtonAction::Scroll(d) => (out[0], out[1]) = (0x01, d as u8),
             ButtonAction::Key(k) => (out[0], out[1]) = (0x02, k),
-            ButtonAction::Macro { ptr, events } => {
+            ButtonAction::Macro { ptr, events, hold } => {
                 out[0] = 0x03;
+                out[1] = if hold { MACRO_HOLD } else { 0x00 };
                 out[2..4].copy_from_slice(&ptr.to_le_bytes());
                 out[4] = events;
             }
@@ -553,7 +564,7 @@ impl Profile {
     /// Events live at `PAYLOAD + ptr`; the pointer is relative to the start of
     /// the profile payload, not the blob.
     pub fn macro_events(&self, action: ButtonAction) -> Vec<MacroEvent> {
-        let ButtonAction::Macro { ptr, events } = action else {
+        let ButtonAction::Macro { ptr, events, .. } = action else {
             return Vec::new();
         };
         let start = offset::PAYLOAD + ptr as usize;
