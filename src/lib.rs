@@ -6,5 +6,6 @@
 
 pub mod config;
 pub mod hardware;
+pub mod iced_ui;
 pub mod macros;
 pub mod ui;
