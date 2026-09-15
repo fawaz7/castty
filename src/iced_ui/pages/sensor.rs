@@ -102,6 +102,9 @@ impl State {
             Message::TuningChanged(value) => self.tuning = value,
             Message::LiftOffChanged(value) => self.lift_off = value,
             Message::AnalyzeStarted => {
+                if self.countdown.is_some() {
+                    return false;
+                }
                 self.surface = None;
                 self.countdown = Some(MEASURE_SECONDS);
                 return true;
@@ -129,27 +132,6 @@ impl State {
     }
 }
 
-/// Like `widgets::field`, but takes the hint by value: `widgets::field`
-/// borrows its hint as `&'a str`, which doesn't fit a string computed fresh
-/// on every render (the surface reading changes with the countdown).
-fn field_owned<'a, M: 'a>(
-    palette: &Palette,
-    label: &'a str,
-    hint: String,
-    control: impl Into<Element<'a, M>>,
-) -> Element<'a, M> {
-    let dim = palette.dim;
-    let left = column![
-        text(label).size(14.0),
-        text(hint).size(11.0).style(move |_t| text::Style { color: Some(dim) }),
-    ]
-    .spacing(2);
-    row![left.width(Length::Fill), control.into()]
-        .align_y(iced::Alignment::Center)
-        .spacing(GAP)
-        .into()
-}
-
 pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
     let mut steps = column![].spacing(GAP);
     for i in 0..3 {
@@ -175,7 +157,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             steps = steps.push(widgets::field(
                 palette,
                 "    Y axis",
-                None,
+                None::<&str>,
                 row![
                     text(format!("{y}")).size(13.0),
                     slider(DPI_MIN..=DPI_MAX, y, move |v| Message::DpiYChanged(i, v)).step(DPI_STEP),
@@ -287,13 +269,10 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
         palette,
         "Surface analyzer",
         Some("Measures how well the sensor reads the surface under it"),
-        // `reading` is computed fresh each render, so it can't be borrowed as
-        // the `&'a str` widgets::field's hint expects; this local variant
-        // takes the hint by value instead.
-        field_owned(
+        widgets::field(
             palette,
             "Surface quality",
-            reading,
+            Some(reading),
             button(text("Start").size(14.0))
                 .padding([8.0, 18.0])
                 .style(move |_t, status| widgets::subtle(&style, status))

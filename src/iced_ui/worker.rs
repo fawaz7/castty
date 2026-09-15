@@ -22,6 +22,10 @@ pub enum Update {
     Connected(Identity),
     Disconnected(String),
     Applied,
+    /// The analyzer's measurement window has been armed on the mouse. Distinct
+    /// from `Applied`: nothing was written to the device or the config file --
+    /// the project only writes on an explicit Apply.
+    SurfaceStarted,
     Surface(u8),
 }
 
@@ -91,7 +95,7 @@ fn run(jobs: mpsc::Receiver<Job>, updates: async_channel::Sender<Update>) {
         let result = match job {
             Job::Connect => dev.identify().map(Update::Connected),
             Job::WriteProfile(p) => dev.write_profile(&p).map(|()| Update::Applied),
-            Job::SurfaceStart => dev.surface_start().map(|()| Update::Applied),
+            Job::SurfaceStart => dev.surface_start().map(|()| Update::SurfaceStarted),
             Job::SurfaceResult => dev.surface_result().map(Update::Surface),
         };
 

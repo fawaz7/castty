@@ -106,3 +106,21 @@ fn analyzer_counts_down_before_reading() {
     assert!(state.update(sensor::Message::Tick));
     assert_eq!(state.countdown, None);
 }
+
+/// Pressing Start again mid-countdown must not reset the window or re-send
+/// the start command -- the view disabling the button is presentation only,
+/// this is the state-level backstop.
+#[test]
+fn analyzer_ignores_a_second_start_mid_countdown() {
+    let profile = factory();
+    let mut state = sensor::State::from_profile(&profile);
+
+    assert!(state.update(sensor::Message::AnalyzeStarted));
+    assert_eq!(state.countdown, Some(10));
+
+    assert!(!state.update(sensor::Message::Tick));
+    assert_eq!(state.countdown, Some(9));
+
+    assert!(!state.update(sensor::Message::AnalyzeStarted));
+    assert_eq!(state.countdown, Some(9));
+}

@@ -28,15 +28,21 @@ pub fn card<'a, M: 'a>(
 }
 
 /// One labelled control on its own line.
+///
+/// `hint` takes anything convertible to `Cow<'a, str>` — a `&'a str` literal
+/// (the common case) or an owned `String` computed fresh each render (e.g. a
+/// live reading) both work, so callers never need a borrow-lifetime
+/// workaround for a value that doesn't outlive the render.
 pub fn field<'a, M: 'a>(
     palette: &Palette,
     label: &'a str,
-    hint: Option<&'a str>,
+    hint: Option<impl Into<std::borrow::Cow<'a, str>>>,
     control: impl Into<Element<'a, M>>,
 ) -> Element<'a, M> {
     let dim = palette.dim;
     let mut left = column![text(label).size(14.0)].spacing(2);
     if let Some(hint) = hint {
+        let hint: std::borrow::Cow<'a, str> = hint.into();
         left = left.push(text(hint).size(11.0).style(move |_t| text::Style { color: Some(dim) }));
     }
     row![left.width(Length::Fill), control.into()]

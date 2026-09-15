@@ -192,6 +192,9 @@ impl Castty {
                     let _ = config::save(self.current, &self.profiles[self.current]);
                     self.status = "Saved to the mouse".into();
                 }
+                worker::Update::SurfaceStarted => {
+                    self.status = "Measuring the surface\u{2026}".into();
+                }
                 worker::Update::Surface(value) => {
                     self.sensor.update(pages::sensor::Message::SurfaceResult(value));
                     self.status = format!(

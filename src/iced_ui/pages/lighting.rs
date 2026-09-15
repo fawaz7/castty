@@ -256,7 +256,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
         widgets::field(
             palette,
             "Animation",
-            None,
+            None::<&str>,
             pick_list(
                 EFFECTS.map(|e| e.label()).to_vec(),
                 Some(state.effect.label()),
