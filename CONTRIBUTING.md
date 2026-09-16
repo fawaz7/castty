@@ -31,9 +31,13 @@ Open an issue before you start and I'll help where I can, even blind.
 - **Getting castty into the AUR**, or into a distribution's own repositories.
 - **Testing** on other distributions, compositors and GPU drivers.
 - **The remaining unknowns** in `research/PROTOCOL.md` — a few constants have no known purpose.
-- **Porting the protocol elsewhere.** If you'd rather add Castor support to OpenRGB, libratbag or a
-  kernel driver than contribute here, please do. That's a better outcome than everyone deriving it
-  separately, and it's why `research/` is published separately from the app.
+- **Porting the protocol elsewhere.** Adding Castor support to OpenRGB, libratbag or a kernel driver
+  is a better outcome than everyone deriving the protocol separately, and it's why `research/` is
+  published separately from the app.
+
+  **I intend to work on OpenRGB and libratbag myself, soon.** So if you are thinking of starting,
+  say so in an issue first — not to claim it, but so we are not two people doing the same port in
+  parallel without knowing. Help is very welcome; duplicated effort is just a waste of your evening.
 
 ## Working on the code
 

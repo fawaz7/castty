@@ -36,9 +36,12 @@ Rust — but the mouse on the desk and the bytes on the wire are what decided ev
 Then I built this app on top of it.
 
 **All of it is here.** The protocol, the raw captures, the capture rig, the decoder — in
-[`research/`](research/), documented, and free for anyone to use however they like. If you want to
-add Castor support to OpenRGB or libratbag instead of using this app, please do; that's a better
-outcome than everyone deriving it separately.
+[`research/`](research/), documented, and free for anyone to use however they like.
+
+And I'm not stopping at this app: **I'll be working on getting Castor support into other open source
+tools — OpenRGB and libratbag in particular — soon.** A mouse that only one program can configure is
+still half-orphaned. The point of documenting the protocol this thoroughly was to make that possible
+for anyone, and I intend to be one of the people who does it.
 
 ---
 
@@ -255,6 +258,11 @@ separate so it can be used without the app:
 
 [`research/README.md`](research/README.md) explains the method end to end and how to reproduce a
 capture yourself.
+
+**Coming next:** I'm planning to upstream this into OpenRGB and libratbag so the Castor works with
+the tools people already use, rather than only with a program written for it. If you want to help, or
+you have already started, [open an issue](https://github.com/fawaz7/castty/issues) — better to do it
+once, together, than three times apart.
 
 ---
 
