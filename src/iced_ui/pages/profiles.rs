@@ -55,15 +55,20 @@ pub fn restore_defaults(profiles: &mut [Profile], dirty: &mut [bool]) {
 }
 
 /// The profiles Apply should actually send: every one marked dirty, in slot
-/// order. Kept as a free function, rather than inlined where `Castty` builds
-/// the write job, so "Apply writes every dirty profile, not only the active
-/// one" is a claim a test can check without a live device.
-pub fn dirty_profiles(profiles: &[Profile], dirty: &[bool]) -> Vec<Profile> {
+/// order, tagged with the slot it belongs to. Kept as a free function,
+/// rather than inlined where `Castty` builds the write job, so "Apply
+/// writes every dirty profile, not only the active one" is a claim a test
+/// can check without a live device.
+///
+/// The slot comes from this function's own enumeration, not from
+/// `Profile.index` -- that byte is decoded off the wire, and a corrupt or
+/// hand-edited profile blob could disagree with where it actually lives.
+pub fn dirty_profiles(profiles: &[Profile], dirty: &[bool]) -> Vec<(usize, Profile)> {
     profiles
         .iter()
-        .zip(dirty)
-        .filter(|(_, &d)| d)
-        .map(|(p, _)| p.clone())
+        .enumerate()
+        .filter(|(i, _)| dirty.get(*i).copied().unwrap_or(false))
+        .map(|(i, p)| (i, p.clone()))
         .collect()
 }
 
@@ -148,7 +153,7 @@ pub fn view<'a>(
     let restore: Element<'_, Message> = if confirming {
         let danger = palette.danger;
         column![
-            text("This overwrites the names and settings of all five profiles saved on this device. This cannot be undone.")
+            text("Resets all five profiles to their factory settings. Nothing reaches the device until you press Apply, and this cannot be undone once you do.")
                 .size(12.0)
                 .style(move |_t| text::Style { color: Some(danger) }),
             row![
@@ -183,7 +188,7 @@ pub fn view<'a>(
         widgets::card(
             palette,
             "Reset",
-            Some("Overwrites all five profiles with the captured factory settings"),
+            Some("Resets all five profiles to their factory settings on the next Apply"),
             restore,
         ),
         widgets::spacer(),

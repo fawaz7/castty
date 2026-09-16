@@ -146,6 +146,18 @@ impl Castty {
         theme::resolve(self.settings.theme, self.settings.accent)
     }
 
+    /// Flush the on-screen widgets into the profile they belong to -- the
+    /// same sequence `Message::Apply` runs, minus the device write. Both an
+    /// Apply and a switch away from the current profile need the in-memory
+    /// profile to actually hold what is on screen before doing anything else
+    /// with it; leaving this to `Apply` alone meant switching profiles first
+    /// silently discarded whatever the widgets held.
+    fn flush_current(&mut self) -> Result<(), crate::hardware::profile::ValueError> {
+        self.lighting.apply_to(&mut self.profiles[self.current]);
+        self.sensor.apply_to(&mut self.profiles[self.current]);
+        self.buttons.apply_to(&mut self.profiles[self.current], &self.library)
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::PageSelected(page) => {
@@ -161,14 +173,30 @@ impl Castty {
             }
             Message::ProfileSelected(index) => {
                 if index < self.profiles.len() {
-                    self.current = index;
-                    // Switching the active profile is not the confirming
-                    // click the restore prompt is waiting for.
-                    self.profiles_page.disarm();
-                    self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
-                    self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
-                    self.buttons =
-                        pages::buttons::State::from_profile(&self.profiles[index], &self.library);
+                    // Flush the outgoing profile's widgets into it before
+                    // switching -- otherwise the edit vanishes the moment the
+                    // widgets are rebuilt from the profile being switched to,
+                    // while its dirty flag stays set and Apply later writes
+                    // the unedited profile to flash for nothing.
+                    match self.flush_current() {
+                        Ok(()) => {
+                            self.current = index;
+                            // Switching the active profile is not the
+                            // confirming click the restore prompt is
+                            // waiting for.
+                            self.profiles_page.disarm();
+                            self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
+                            self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
+                            self.buttons = pages::buttons::State::from_profile(
+                                &self.profiles[index],
+                                &self.library,
+                            );
+                        }
+                        // The macro area on the outgoing profile is full;
+                        // switching now would discard the edit that
+                        // overflowed it, so stay on it instead.
+                        Err(error) => self.status = format!("Not saved: {error}"),
+                    }
                 }
             }
             Message::Lighting(message) => {
@@ -252,26 +280,25 @@ impl Castty {
                     .arg(pages::about::GITHUB)
                     .spawn();
             }
-            Message::Apply => {
-                self.lighting.apply_to(&mut self.profiles[self.current]);
-                self.sensor.apply_to(&mut self.profiles[self.current]);
-                match self.buttons.apply_to(&mut self.profiles[self.current], &self.library) {
-                    Ok(()) => {
-                        // Every dirty profile, not only the active one -- a
-                        // rename on a slot you are not editing, or a restore,
-                        // must not be silently dropped on the next Apply.
-                        let profiles = pages::profiles::dirty_profiles(&self.profiles, &self.dirty);
-                        self.worker.send(worker::Job::WriteProfiles {
-                            profiles,
-                            active: self.current as u8,
-                        });
-                        self.dirty = [false; config::PROFILE_COUNT];
-                    }
-                    // The macro area is full; nothing is sent to the mouse, so
-                    // the write is not silently reported as saved.
-                    Err(error) => self.status = format!("Not saved: {error}"),
+            Message::Apply => match self.flush_current() {
+                Ok(()) => {
+                    // Every dirty profile, not only the active one -- a
+                    // rename on a slot you are not editing, or a restore,
+                    // must not be silently dropped on the next Apply. `dirty`
+                    // itself is left alone here and only cleared per index as
+                    // each write is confirmed (`Update::Applied`), so a write
+                    // that fails partway through a batch leaves the rest
+                    // marked dirty and retryable instead of silently dropped.
+                    let profiles = pages::profiles::dirty_profiles(&self.profiles, &self.dirty);
+                    self.worker.send(worker::Job::WriteProfiles {
+                        profiles,
+                        active: self.current as u8,
+                    });
                 }
-            }
+                // The macro area is full; nothing is sent to the mouse, so
+                // the write is not silently reported as saved.
+                Err(error) => self.status = format!("Not saved: {error}"),
+            },
             Message::Tick => {}
             Message::Device(update) => match update {
                 worker::Update::Connected(id) => {
@@ -282,9 +309,15 @@ impl Castty {
                     // Persist exactly the slots the worker actually wrote --
                     // not whichever profile happens to be `current` by the
                     // time this reply lands, which may have changed since
-                    // Apply was pressed.
+                    // Apply was pressed -- and only now clear their dirty
+                    // flags, so a write that failed partway through (a
+                    // disconnect mid-Apply) leaves the rest of the batch
+                    // dirty and retryable rather than silently dropped.
                     for index in indices {
                         let _ = config::save(index, &self.profiles[index]);
+                        if let Some(flag) = self.dirty.get_mut(index) {
+                            *flag = false;
+                        }
                     }
                     self.status = "Saved to the mouse".into();
                 }
@@ -539,4 +572,201 @@ pub fn run() -> iced::Result {
         .theme(app_theme)
         .window_size((1040.0, 700.0))
         .run()
+}
+
+// `Castty`'s fields and `update` are private, so exercising the Apply/switch
+// wiring means testing from inside this module rather than from
+// `tests/pages.rs` -- an external test cannot construct a `Castty` at all,
+// let alone reach into `dirty` or `profiles_page` to check it. A prior round
+// covered the pure helpers (`dirty_profiles`, `restore_defaults`,
+// `profiles::State`) from outside; this covers the wiring that calls them,
+// which turned out to matter -- reverting the fixes those helpers exist for
+// left the outside tests green.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::hardware::MacroEvent;
+    use crate::macros::{NamedMacro, Timing};
+    use std::sync::mpsc;
+
+    fn test_profiles() -> Vec<Profile> {
+        (0..config::PROFILE_COUNT).map(config::factory_default).collect()
+    }
+
+    /// A `Castty` wired to a plain channel instead of a live worker thread,
+    /// so a test can inspect the `Job` sent by `update` without touching
+    /// real hardware, and without `Castty::new`'s side effects (spawning the
+    /// worker thread, reading the real settings and macro library from disk).
+    fn test_app() -> (Castty, mpsc::Receiver<worker::Job>) {
+        let profiles = test_profiles();
+        let library = Library::default();
+        let lighting = pages::lighting::State::from_profile(&profiles[0]);
+        let sensor = pages::sensor::State::from_profile(&profiles[0]);
+        let buttons = pages::buttons::State::from_profile(&profiles[0], &library);
+        let (tx, rx) = mpsc::channel();
+        let app = Castty {
+            lighting,
+            sensor,
+            buttons,
+            macros: pages::macros::State::default(),
+            profiles_page: pages::profiles::State::default(),
+            art: Rc::new(art::Art::load()),
+            started: Instant::now(),
+            profiles,
+            current: 0,
+            library,
+            page: Page::Lighting,
+            dirty: [false; config::PROFILE_COUNT],
+            status: String::new(),
+            settings: Settings::default(),
+            worker: worker::Handle::for_test(tx),
+        };
+        (app, rx)
+    }
+
+    /// The bug fix-round-1 existed for: Apply must send every dirty profile,
+    /// not only whichever one is on screen.
+    #[test]
+    fn apply_sends_every_dirty_profile_not_only_the_active_one() {
+        let (mut app, jobs) = test_app();
+        app.current = 2;
+        app.dirty[1] = true;
+        app.dirty[3] = true;
+
+        let _ = app.update(Message::Apply);
+
+        let job = jobs.try_recv().expect("Apply must send a job");
+        let worker::Job::WriteProfiles { profiles, active } = job else {
+            panic!("expected WriteProfiles");
+        };
+        let indices: Vec<usize> = profiles.iter().map(|(i, _)| *i).collect();
+        assert_eq!(indices, vec![1, 3], "only the dirty slots, not slot 0");
+        assert_eq!(active, 2, "the mouse must end up switched to the current profile");
+    }
+
+    /// The job's `active` always tracks `current`, even when nothing else is
+    /// dirty -- an empty write batch must still tell the worker which
+    /// profile to stay on.
+    #[test]
+    fn apply_job_targets_the_current_profile_even_with_nothing_dirty() {
+        let (mut app, jobs) = test_app();
+        app.current = 4;
+
+        let _ = app.update(Message::Apply);
+
+        let job = jobs.try_recv().expect("Apply must send a job");
+        let worker::Job::WriteProfiles { profiles, active } = job else {
+            panic!("expected WriteProfiles");
+        };
+        assert!(profiles.is_empty());
+        assert_eq!(active, 4);
+    }
+
+    /// `Update::Applied` must persist exactly the indices it is handed, not
+    /// whatever is `current` when the reply lands -- and only then clear
+    /// their dirty flags, so a failed write elsewhere in the batch stays
+    /// retryable.
+    #[test]
+    fn applied_persists_exactly_the_indices_it_was_handed() {
+        // config::save resolves its path through XDG_CONFIG_HOME; point it
+        // at a throwaway directory for this one test so it cannot touch the
+        // developer's real saved profiles.
+        let dir = std::env::temp_dir().join(format!("castty-test-{}", std::process::id()));
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: this test does not run concurrently with any other test
+        // that reads or writes XDG_CONFIG_HOME -- it is the only one in this
+        // binary that touches it, and the previous value is restored below.
+        unsafe { std::env::set_var("XDG_CONFIG_HOME", &dir) };
+
+        let (mut app, _jobs) = test_app();
+        app.current = 0;
+        app.dirty[1] = true;
+        app.dirty[3] = true;
+
+        let _ = app.update(Message::Device(worker::Update::Applied(vec![1, 3])));
+
+        assert!(config::state_path(1).exists());
+        assert!(config::state_path(3).exists());
+        assert!(!config::state_path(0).exists(), "only the handed indices are persisted");
+        assert!(!app.dirty[1], "a confirmed write clears its own dirty flag");
+        assert!(!app.dirty[3]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+        // SAFETY: see above.
+        unsafe {
+            match previous {
+                Some(v) => std::env::set_var("XDG_CONFIG_HOME", v),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    /// A write that fails must not have already thrown away the chance to
+    /// retry -- `dirty` is cleared per index in `Update::Applied`, never on
+    /// send, so a `Disconnected` reply (or simply never replying) leaves the
+    /// edit retryable rather than silently lost.
+    #[test]
+    fn dirty_survives_a_send_until_the_write_is_confirmed() {
+        let (mut app, _jobs) = test_app();
+        app.dirty[1] = true;
+
+        let _ = app.update(Message::Apply);
+
+        assert!(app.dirty[1], "dirty must not clear just because a job was sent");
+    }
+
+    /// Switching profiles must not throw away an edit that has not been
+    /// applied yet -- it has to land in the outgoing profile first, exactly
+    /// as pressing Apply would, or it vanishes the moment the widgets are
+    /// rebuilt from the profile being switched to.
+    #[test]
+    fn switching_profiles_flushes_pending_edits_into_the_outgoing_profile() {
+        let (mut app, _jobs) = test_app();
+        let _ = app.update(Message::Lighting(pages::lighting::Message::ModeChanged(
+            pages::lighting::Mode::Off,
+        )));
+
+        let _ = app.update(Message::ProfileSelected(1));
+
+        let wheel = app.profiles[0].wheel();
+        assert_eq!(
+            (wheel.r, wheel.g, wheel.b),
+            (0, 0, 0),
+            "the edit must survive the switch instead of vanishing with the widgets"
+        );
+        assert_eq!(app.current, 1);
+    }
+
+    /// If flushing the outgoing profile fails (the macro area overflows),
+    /// the switch must not happen either -- otherwise the edit that
+    /// overflowed it is lost and the user is looking at a different profile
+    /// with no idea why nothing landed.
+    #[test]
+    fn a_macro_capacity_error_on_switch_keeps_the_user_on_the_current_profile() {
+        let (mut app, _jobs) = test_app();
+        let events: Vec<MacroEvent> = (0..33)
+            .map(|i| MacroEvent { key: 0x04, pressed: i % 2 == 0, delay_ms: 0 })
+            .collect();
+        app.library.put(NamedMacro { name: "Huge".into(), timing: Timing::None, events });
+        app.buttons.slots[0] = pages::buttons::Slot::Library("Huge".into());
+
+        let _ = app.update(Message::ProfileSelected(1));
+
+        assert_eq!(app.current, 0, "must not switch away from an edit that failed to flush");
+        assert!(app.status.starts_with("Not saved"));
+    }
+
+    /// Selecting a profile is not the confirming click the restore prompt is
+    /// waiting for -- it must disarm a pending restore, the same way leaving
+    /// the Profiles page does.
+    #[test]
+    fn selecting_a_profile_disarms_a_pending_restore() {
+        let (mut app, _jobs) = test_app();
+        let _ = app.update(Message::Profiles(pages::profiles::Message::RestoreRequested));
+        assert!(app.profiles_page.confirming());
+
+        let _ = app.update(Message::ProfileSelected(1));
+
+        assert!(!app.profiles_page.confirming());
+    }
 }

@@ -12,12 +12,13 @@ use std::thread;
 #[derive(Debug)]
 pub enum Job {
     Connect,
-    /// Every profile that needs to reach flash, plus which one the mouse
-    /// should end up switched to. `Device::write_profile` commits to its own
-    /// index as it writes, so without an explicit final commit the mouse
-    /// would end up active on whichever profile happened to be written last
-    /// rather than the one the user has selected.
-    WriteProfiles { profiles: Vec<Profile>, active: u8 },
+    /// Every profile that needs to reach flash, each tagged with the slot it
+    /// belongs to, plus which slot the mouse should end up switched to.
+    /// `Device::write_profile` commits to its own index as it writes, so
+    /// without an explicit final commit the mouse would end up active on
+    /// whichever profile happened to be written last rather than the one
+    /// the user has selected.
+    WriteProfiles { profiles: Vec<(usize, Profile)>, active: u8 },
     SurfaceStart,
     SurfaceResult,
 }
@@ -47,6 +48,14 @@ impl Handle {
         // The thread lives as long as the process; a failed send is not worth
         // surfacing to the user.
         let _ = self.jobs.send(job);
+    }
+
+    /// A handle backed by a plain channel with no worker thread reading it,
+    /// so a test can inspect the `Job` `Castty::update` sends without
+    /// spawning a thread that tries to open real hardware.
+    #[cfg(test)]
+    pub(crate) fn for_test(jobs: mpsc::Sender<Job>) -> Self {
+        Handle { jobs }
     }
 }
 
@@ -126,11 +135,16 @@ fn run(jobs: mpsc::Receiver<Job>, updates: async_channel::Sender<Update>) {
 /// index, so a plain loop over several profiles would leave the mouse
 /// switched to the last one written rather than the active one -- the
 /// explicit final `commit(active)` is what fixes that.
-fn write_profiles(dev: &Device, profiles: &[Profile], active: u8) -> Result<Update, Error> {
-    let indices: Vec<usize> = profiles.iter().map(|p| p.index as usize).collect();
-    for profile in profiles {
+fn write_profiles(dev: &Device, profiles: &[(usize, Profile)], active: u8) -> Result<Update, Error> {
+    // Nothing to write means nothing to commit either. Unreachable today --
+    // the UI disables Apply when nothing is dirty -- but that guard lives in
+    // the UI; the worker should not depend on it to avoid a bare commit.
+    if profiles.is_empty() {
+        return Ok(Update::Applied(Vec::new()));
+    }
+    for (_, profile) in profiles {
         dev.write_profile(profile)?;
     }
     dev.commit(active)?;
-    Ok(Update::Applied(indices))
+    Ok(Update::Applied(profiles.iter().map(|(i, _)| *i).collect()))
 }

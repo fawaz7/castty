@@ -544,8 +544,10 @@ fn dirty_profiles_includes_every_marked_slot_not_just_the_active_one() {
     let dirty = [false, true, true];
     let picked = profiles::dirty_profiles(&list, &dirty);
     assert_eq!(picked.len(), 2);
-    assert_eq!(picked[0].index, list[1].index);
-    assert_eq!(picked[1].index, list[2].index);
+    assert_eq!(picked[0].0, 1);
+    assert_eq!(picked[1].0, 2);
+    assert_eq!(picked[0].1.index, list[1].index);
+    assert_eq!(picked[1].1.index, list[2].index);
 }
 
 #[test]
