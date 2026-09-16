@@ -206,7 +206,6 @@ pub fn view<'a>(state: &'a State, library: &'a Library, palette: &Palette) -> El
             Some("Take care leaving yourself without a left click"),
             numbered,
         ),
-        widgets::spacer(),
     ]
     .spacing(GAP)
     .into()

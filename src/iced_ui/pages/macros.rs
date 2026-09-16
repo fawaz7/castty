@@ -331,7 +331,6 @@ pub fn view<'a>(
 
         return column![
             widgets::card(palette, "Edit macro", None, editor),
-            widgets::spacer(),
         ]
         .spacing(GAP)
         .into();
@@ -393,7 +392,6 @@ pub fn view<'a>(
             None,
             column![capacity, new_button, list].spacing(GAP),
         ),
-        widgets::spacer(),
     ]
     .spacing(GAP)
     .into()

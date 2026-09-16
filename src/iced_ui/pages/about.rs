@@ -102,7 +102,6 @@ pub fn view<'a>(current: Named, accent: Accent, palette: &Palette) -> Element<'a
     column![
         widgets::card(palette, "About", None, about_body),
         appearance,
-        widgets::spacer(),
     ]
     .spacing(GAP)
     .width(Length::Fill)

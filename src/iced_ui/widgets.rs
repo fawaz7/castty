@@ -143,8 +143,15 @@ pub fn dim<'a>(palette: &Palette, content: impl text::IntoFragment<'a>, size: f3
         .into()
 }
 
-pub fn spacer<'a, M: 'a>() -> Element<'a, M> {
-    Space::new().height(Length::Fill).into()
+/// Pushes whatever follows it in a `row!` to the right-hand edge.
+///
+/// Deliberately horizontal only. A single `spacer()` that filled the
+/// *vertical* axis was once used here inside a row, where it inflated the
+/// tab bar to the full window height; naming the axis makes that mistake
+/// impossible to write. Columns that scroll do not want a trailing pusher at
+/// all -- inside a `scrollable` there is nothing to push against.
+pub fn push_right<'a, M: 'a>() -> Element<'a, M> {
+    Space::new().width(Length::Fill).into()
 }
 
 pub fn lighten(colour: iced::Color, amount: f32) -> iced::Color {

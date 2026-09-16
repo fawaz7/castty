@@ -280,7 +280,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
         ),
     );
 
-    column![dpi_card, sensor_card, surface_card, widgets::spacer()]
+    column![dpi_card, sensor_card, surface_card]
         .spacing(GAP)
         .into()
 }

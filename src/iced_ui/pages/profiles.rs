@@ -191,7 +191,6 @@ pub fn view<'a>(
             Some("Resets all five profiles to their factory settings on the next Apply"),
             restore,
         ),
-        widgets::spacer(),
     ]
     .spacing(GAP)
     .into()

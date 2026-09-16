@@ -18,6 +18,12 @@ async-channel = "2"
 iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 
+[dev-dependencies]
+# Headless layout assertions and snapshots for the iced UI, so a page that
+# renders nothing fails a test instead of waiting for someone to look. See
+# src/iced_ui/layout_tests.rs. The backend is pinned in .cargo/config.toml.
+iced_test = "0.14.0"
+
 [profile.release]
 lto = "thin"
 codegen-units = 1

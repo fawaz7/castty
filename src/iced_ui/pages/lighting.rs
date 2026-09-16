@@ -291,7 +291,6 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             Some("Applies to both LEDs; the mouse has no per-LED effect"),
             effect_body,
         ),
-        widgets::spacer(),
     ]
     .spacing(GAP)
     .into()

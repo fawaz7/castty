@@ -1,0 +1,4 @@
+[env]
+# The headless UI tests render with tiny-skia so they need no GPU and give
+# the same pixels on every machine. Only iced_test reads this.
+ICED_TEST_BACKEND = "tiny-skia"

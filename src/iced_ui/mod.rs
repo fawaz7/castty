@@ -433,7 +433,7 @@ impl Castty {
                 text("castty").size(18.0),
                 Space::new().width(Length::Fixed(18.0)),
                 tabs,
-                widgets::spacer(),
+                widgets::push_right(),
                 iced::widget::pick_list(names.clone(), selected, move |chosen| {
                     let index = names.iter().position(|n| *n == chosen).unwrap_or(0);
                     Message::ProfileSelected(index)
@@ -449,6 +449,7 @@ impl Castty {
             .align_y(iced::Alignment::Center)
             .spacing(10.0),
         )
+        .id("tab-bar")
         .padding([12.0, widgets::GAP])
         .into()
     }
@@ -468,6 +469,7 @@ impl Castty {
             .width(Length::Fill)
             .height(Length::Fill),
         )
+        .id("hero")
         .style(move |_t| style.stage())
         .into()
     }
@@ -501,6 +503,14 @@ impl Castty {
             }
         };
 
+        // Only the page content scrolls. A vertical `scrollable` hands its
+        // child unbounded height, so anything inside it sized `Length::Fill`
+        // resolves against infinity and collapses to zero -- which is how
+        // the Large-hero pages once rendered nothing at all. The hero and
+        // the outer column stay outside it, so their `Fill` resolves against
+        // the window.
+        let content = scrollable(container(content).id("page-content").width(Length::Fill))
+            .height(Length::Fill);
         let body: Element<'_, Message> = match self.page.hero() {
             Hero::Large => row![
                 container(self.hero(&palette)).width(Length::FillPortion(5)).height(Length::Fill),
@@ -516,15 +526,17 @@ impl Castty {
                 content,
             ]
             .spacing(widgets::GAP)
+            .height(Length::Fill)
             .into(),
-            Hero::None => content,
+            Hero::None => content.into(),
         };
 
         column![
             self.tab_bar(&palette),
-            scrollable(container(body).padding(widgets::GAP)).height(Length::Fill),
+            container(body).padding(widgets::GAP).height(Length::Fill),
             self.footer(&palette),
         ]
+        .height(Length::Fill)
         .into()
     }
 
@@ -535,6 +547,7 @@ impl Castty {
                 .size(12.0)
                 .style(move |_t| text::Style { color: Some(dim) }),
         )
+        .id("footer")
         .padding([8.0, widgets::GAP])
         .into()
     }
@@ -636,6 +649,9 @@ pub fn run() -> iced::Result {
 // which turned out to matter -- reverting the fixes those helpers exist for
 // left the outside tests green.
 #[cfg(test)]
+mod layout_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::hardware::MacroEvent;
@@ -650,7 +666,7 @@ mod tests {
     /// so a test can inspect the `Job` sent by `update` without touching
     /// real hardware, and without `Castty::new`'s side effects (spawning the
     /// worker thread, reading the real settings and macro library from disk).
-    fn test_app() -> (Castty, mpsc::Receiver<worker::Job>) {
+    pub(super) fn test_app() -> (Castty, mpsc::Receiver<worker::Job>) {
         let profiles = test_profiles();
         let library = Library::default();
         let lighting = pages::lighting::State::from_profile(&profiles[0]);

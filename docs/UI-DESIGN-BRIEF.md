@@ -436,7 +436,7 @@ judgement.
 
 ### Blocking — the app is unusable until these are fixed
 
-- [ ] **T1. Lighting and Buttons render nothing.**
+- [x] **T1. Lighting and Buttons render nothing.**
   `src/iced_ui/mod.rs:505-511` — the `Hero::Large` arm builds
   `row![...].height(Length::Fill)` with a hero container also at
   `height(Length::Fill)`, and `mod.rs:525` wraps the whole body in
@@ -450,7 +450,7 @@ judgement.
   person.
   **Verify:** open Lighting and Buttons; the hero and the controls both draw.
 
-- [ ] **T2. `spacer()` sets the wrong axis in the tab bar.**
+- [x] **T2. `spacer()` sets the wrong axis in the tab bar.**
   `src/iced_ui/widgets.rs:146-148` returns `Space::new().height(Length::Fill)`.
   `src/iced_ui/mod.rs:436` uses it inside a `row!`, where pushing items apart
   needs `width(Length::Fill)`; setting height instead inflates the row to the
@@ -467,7 +467,7 @@ judgement.
   **Verify:** the tab bar is a normal-height strip, and the profile picker and
   Apply sit at the right edge.
 
-- [ ] **T3. Check the trailing column spacers against T1's fix.**
+- [x] **T3. Check the trailing column spacers against T1's fix.**
   Those seven `height(Fill)` spacers sit inside the same `scrollable` and are
   subject to the identical rule. Once T1 changes what the scrollable wraps,
   confirm each is still doing something useful — inside a scrollable, a
@@ -475,7 +475,9 @@ judgement.
 
 ### Layout net — do this before redesigning, so the redesign has a net under it
 
-- [ ] **T4. Headless layout assertions.** See §10. iced's `advanced` feature is
+- [x] **T4. Headless layout assertions.** Done in `src/iced_ui/layout_tests.rs`
+  with `iced_test`'s `Simulator` (a dev-dependency; the tiny-skia backend is
+  pinned in `.cargo/config.toml` so no GPU is needed). See §10. iced's `advanced` feature is
   already enabled in `Cargo.toml`. Build each page's view, compute the layout
   tree against fixed window bounds, and assert: every page's body has non-zero
   width *and* height; the tab bar's height is under a sane bound; the profile
@@ -486,7 +488,10 @@ judgement.
   that return intended measurements, which is weaker but still catches a
   collapse to zero.
 
-- [ ] **T5. Get a screenshot into the loop.** This machine has no `Xvfb`,
+- [x] **T5. Get a screenshot into the loop.** `cargo test --lib layout_tests`
+  writes a PNG of every page to `target/ui-snapshots/`, rendered headlessly
+  by the same simulator. Look at them after every layout change. Background
+  on why nothing else worked: this machine has no `Xvfb`,
   `xvfb-run`, `weston`, `sway`, `grim` or `xwininfo`, and ImageMagick's
   `import` cannot reach the XWayland root, so automated capture was abandoned.
   Either install a nested compositor plus a capture tool, or accept it as a
