@@ -1,4 +1,11 @@
 /target
+
+# makepkg build products, if someone runs it in place rather than in a copy.
+/packaging/arch/src/
+/packaging/arch/pkg/
+/packaging/arch/*.pkg.tar.*
+/packaging/arch/*.tar.gz
+
 __pycache__/
 *.pyc
 *.so

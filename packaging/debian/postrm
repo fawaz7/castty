@@ -1,0 +1,14 @@
+#!/bin/sh
+# The rule file is gone by now; reload so the kernel stops applying it.
+# Settings under ~/.config/castty are the user's and are deliberately left.
+set -e
+
+if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0

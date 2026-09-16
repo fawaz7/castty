@@ -221,6 +221,17 @@ against real captured frames -- over synthesising expected bytes by hand.
 
 - `packaging/60-mionix-castor.rules` — the udev rule users must install; `/dev/hidraw*` is root-only
   by default. Keep it in step with any VID/PID change.
+- `install.sh` — the universal installer (build, install, udev rule, caches; `--prefix`,
+  `--uninstall`, `--no-build`). `packaging/arch/PKGBUILD` and the `[package.metadata.deb]` block in
+  `Cargo.toml` are the Arch and Debian packages; `packaging/README.md` documents all three plus the
+  release flow. A packaged udev rule goes to `/usr/lib/udev/rules.d/`, `install.sh`'s to
+  `/etc/udev/rules.d/` — the latter is the administrator's directory and the script is acting as the
+  administrator. Keep the four installed artefacts (binary, rule, desktop entry, icons) in step
+  across all three.
+- **Runtime dependencies are invisible to `ldd`.** Only libc, libm and libgcc are linked; winit and
+  wgpu dlopen libxkbcommon, wayland, X11/xcb, Vulkan and GL. Establish them by tracing a real run
+  (`LD_DEBUG=libs`), never from the ELF headers, or a package will install and then fail to open a
+  window.
 - `packaging/io.github.fawaz7.castty.desktop` and `packaging/icons/hicolor/` — desktop integration.
   The scalable SVG is the **only** hand-edited artwork; every PNG is generated from it by
   `tools/generate-icons.sh`, and the 128px one is also embedded in the binary as the window icon.

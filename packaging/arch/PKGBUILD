@@ -1,0 +1,67 @@
+# Maintainer: Fawaz Alghzawi <https://github.com/fawaz7>
+pkgname=castty
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Configure the Mionix Castor mouse on Linux -- lighting, DPI, buttons and macros"
+arch=('x86_64')
+url="https://github.com/fawaz7/castty"
+license=('GPL-3.0-or-later')
+# Everything below libc is dlopened by winit and wgpu rather than linked, so
+# none of it shows up in ldd -- but the app cannot open a window without it.
+depends=('libxkbcommon' 'libxkbcommon-x11' 'wayland' 'libx11' 'libxcb'
+         'libxcursor' 'libxi' 'libxrandr' 'gcc-libs')
+# Vulkan is preferred; wgpu falls back to GL, so neither is a hard requirement.
+optdepends=('vulkan-icd-loader: GPU rendering via Vulkan'
+            'vulkan-driver: GPU rendering via Vulkan'
+            'libgl: GPU rendering via OpenGL, if Vulkan is unavailable')
+makedepends=('cargo')
+source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('SKIP')
+
+prepare() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    cargo fetch --locked --target "$(rustc -vV | sed -n 's/^host: //p')"
+}
+
+build() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    export CARGO_TARGET_DIR=target
+    cargo build --frozen --release
+}
+
+check() {
+    cd "$pkgname-$pkgver"
+    export RUSTUP_TOOLCHAIN=stable
+    # The suite runs against the captured device frames in research/captures/
+    # and renders headlessly, so it needs neither the mouse nor a display.
+    cargo test --frozen --release
+}
+
+package() {
+    cd "$pkgname-$pkgver"
+    install -Dm755 target/release/castty "$pkgdir/usr/bin/castty"
+
+    # /dev/hidraw* is root-only by default; this tags the device uaccess so the
+    # user logged in at the seat can reach it. Without it castty finds nothing.
+    install -Dm644 packaging/60-mionix-castor.rules \
+        "$pkgdir/usr/lib/udev/rules.d/60-mionix-castor.rules"
+
+    install -Dm644 packaging/io.github.fawaz7.castty.desktop \
+        "$pkgdir/usr/share/applications/io.github.fawaz7.castty.desktop"
+
+    for size in 16 24 32 48 64 128 256 512; do
+        install -Dm644 "packaging/icons/hicolor/${size}x${size}/apps/io.github.fawaz7.castty.png" \
+            "$pkgdir/usr/share/icons/hicolor/${size}x${size}/apps/io.github.fawaz7.castty.png"
+    done
+    install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.fawaz7.castty.svg \
+        "$pkgdir/usr/share/icons/hicolor/scalable/apps/io.github.fawaz7.castty.svg"
+
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    # The Mionix artwork in resources/ is not covered by the GPL grant; NOTICE.md
+    # is the only record of that, so it ships with the package.
+    install -Dm644 NOTICE.md "$pkgdir/usr/share/licenses/$pkgname/NOTICE.md"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 research/PROTOCOL.md "$pkgdir/usr/share/doc/$pkgname/PROTOCOL.md"
+}

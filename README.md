@@ -98,11 +98,11 @@ palettes and accents, switchable in **About**.
 
 ## Requirements
 
-- Linux with `hidraw` (any modern kernel)
-- Rust 1.88 or newer
+- A **Mionix Castor**, USB ID `22d4:1316`
+- Linux with `hidraw` (any modern kernel), x86-64
 - A Wayland or X11 session — GPU rendering via Vulkan or OpenGL where a driver exists, software
   rendering where it doesn't
-- A **Mionix Castor**, USB ID `22d4:1316`
+- Rust 1.88 or newer, **only if building from source**
 
 > The Castor **PRO** (`22d4:1320`/`1321`) is a different device and is *not* supported. See
 > [Contributing](#contributing) if you have one.
@@ -111,43 +111,87 @@ palettes and accents, switchable in **About**.
 
 ## Install
 
-### 1. Device access
+Every route installs the same four things: the binary, a **udev rule** that makes the mouse reachable
+without root, a desktop entry and the icons. The udev rule is the one that is not optional — without
+it `/dev/hidraw*` stays `root:root 0600` and castty finds no device.
 
-`/dev/hidraw*` is root-only by default, so the rule below grants access to whoever is logged in at
-the console. No group membership, nothing else on the system affected:
+<details open>
+<summary><b>Arch Linux</b> (and Manjaro, EndeavourOS, CachyOS)</summary>
 
 ```sh
-sudo install -m644 packaging/60-mionix-castor.rules /etc/udev/rules.d/
-sudo udevadm control --reload
-sudo udevadm trigger --subsystem-match=hidraw
+git clone https://github.com/fawaz7/castty
+cd castty/packaging/arch
+makepkg -si
 ```
 
-Replug the mouse, or reboot, if it was already connected.
+</details>
 
-### 2. Build and run
+<details open>
+<summary><b>Debian and Ubuntu</b> (and Mint, Pop!_OS)</summary>
+
+Grab `castty_1.0.0-1_amd64.deb` from the [latest release](https://github.com/fawaz7/castty/releases/latest):
+
+```sh
+sudo apt install ./castty_1.0.0-1_amd64.deb
+```
+
+`apt install ./file.deb` pulls in the dependencies; `dpkg -i` does not. Requires Debian 12+ or
+Ubuntu 22.04+.
+
+</details>
+
+<details>
+<summary><b>Any distribution</b> — prebuilt binary, no compiler needed</summary>
+
+```sh
+tar xzf castty-1.0.0-x86_64-linux.tar.gz
+cd castty-1.0.0-x86_64-linux
+./install.sh --no-build
+```
+
+From the [latest release](https://github.com/fawaz7/castty/releases/latest). The binary links only
+against libc, so it runs on any glibc 2.35 or newer.
+
+</details>
+
+<details>
+<summary><b>Any distribution</b> — from source</summary>
+
+Needs Rust 1.88+ ([rustup](https://rustup.rs), or your package manager):
 
 ```sh
 git clone https://github.com/fawaz7/castty
 cd castty
-cargo build --release
-./target/release/castty
+./install.sh
 ```
 
-### 3. Desktop entry (optional)
+The script builds, installs to `/usr/local`, sets up the udev rule and refreshes the desktop caches.
+It asks for `sudo` only for the steps that genuinely need root.
 
-Only needed to launch castty from your application menu rather than a terminal:
+`./install.sh --prefix ~/.local` installs for your user alone — root is then needed only for the
+udev rule. `./install.sh --help` lists the rest.
+
+</details>
+
+### Then
 
 ```sh
-sudo install -Dm755 target/release/castty /usr/local/bin/castty
-sudo install -Dm644 packaging/io.github.fawaz7.castty.desktop \
-    /usr/share/applications/io.github.fawaz7.castty.desktop
-sudo cp -r packaging/icons/hicolor /usr/share/icons/
-sudo update-desktop-database /usr/share/applications
-sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
+castty info
 ```
 
-The last two refresh the desktop and icon caches; both are safe to skip if the commands aren't on
-your system.
+Expect your firmware and current profile. If it says no device was found, **replug the mouse once** —
+udev rules apply when a device connects. Then launch `castty`, or find it in your application menu.
+
+### Uninstall
+
+```sh
+sudo pacman -R castty          # Arch
+sudo apt remove castty         # Debian/Ubuntu
+./install.sh --uninstall       # install.sh
+```
+
+Your settings in `~/.config/castty/` are always left alone — the mouse cannot be read back, so that
+directory is the only record of how it is configured. Delete it by hand if you want no trace.
 
 ---
 
@@ -225,7 +269,7 @@ shares a software lineage. Adding a device should mostly be a matter of new capt
 
 Also welcome:
 
-- Packaging (AUR, Flatpak, Nix, .deb)
+- Packaging — Flatpak and Nix (Arch and Debian are covered; see [`packaging/`](packaging/))
 - Testing on other distributions and compositors
 - The few remaining unknowns in `research/PROTOCOL.md`
 - Porting the protocol into OpenRGB, libratbag or a kernel driver — genuinely, please

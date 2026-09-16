@@ -1,0 +1,68 @@
+name: Release
+
+# Publishing is deliberate: push a tag, get a release.
+#   git tag -a v1.0.0 -m "castty 1.0.0" && git push origin v1.0.0
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build packages
+    # Not ubuntu-latest on purpose. A binary built against glibc N runs on N and
+    # newer only, so the runner sets the oldest distro anyone can install on.
+    # 22.04 ships glibc 2.35, which covers Ubuntu 22.04+ and Debian 12+.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            pkg-config libxkbcommon-dev libwayland-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --all-targets
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Build .deb
+        run: |
+          cargo install cargo-deb --locked
+          # --no-build so it packages the binary just tested, rather than
+          # rebuilding it with different flags.
+          cargo deb --no-build
+
+      - name: Build portable tarball
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          staging="castty-${version}-x86_64-linux"
+          mkdir -p "$staging"
+          cp target/release/castty "$staging/"
+          cp README.md LICENSE NOTICE.md install.sh "$staging/"
+          cp -r packaging "$staging/"
+          # install.sh --no-build turns this into a working install anywhere,
+          # which is the point of shipping packaging/ alongside the binary.
+          tar czf "${staging}.tar.gz" "$staging"
+          sha256sum "${staging}.tar.gz" > "${staging}.tar.gz.sha256"
+          sha256sum target/debian/*.deb > deb.sha256
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          generate_release_notes: true
+          files: |
+            castty-*-x86_64-linux.tar.gz
+            castty-*-x86_64-linux.tar.gz.sha256
+            target/debian/*.deb
+            deb.sha256

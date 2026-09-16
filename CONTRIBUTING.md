@@ -24,7 +24,11 @@ Open an issue before you start and I'll help where I can, even blind.
 
 ### Everything else
 
-- **Packaging** — AUR, Flatpak, Nix, `.deb`. None exist yet.
+- **Packaging** — Flatpak and Nix. Arch (`packaging/arch/PKGBUILD`) and Debian
+  (`[package.metadata.deb]` in `Cargo.toml`) are already covered, and `packaging/README.md`
+  documents both. A Flatpak needs a way to reach `/dev/hidraw*` from the sandbox, which is the part
+  worth thinking about before starting.
+- **Getting castty into the AUR**, or into a distribution's own repositories.
 - **Testing** on other distributions, compositors and GPU drivers.
 - **The remaining unknowns** in `research/PROTOCOL.md` — a few constants have no known purpose.
 - **Porting the protocol elsewhere.** If you'd rather add Castor support to OpenRGB, libratbag or a

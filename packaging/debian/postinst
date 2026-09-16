@@ -1,0 +1,16 @@
+#!/bin/sh
+# Apply the new udev rule without waiting for a reboot, and trigger it so a
+# mouse that is already plugged in picks it up rather than needing a replug.
+set -e
+
+if [ "$1" = "configure" ]; then
+    if command -v udevadm >/dev/null 2>&1; then
+        udevadm control --reload-rules >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=hidraw >/dev/null 2>&1 || true
+        udevadm trigger --subsystem-match=usb --attr-match=idVendor=22d4 >/dev/null 2>&1 || true
+    fi
+fi
+
+#DEBHELPER#
+
+exit 0
