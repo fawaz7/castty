@@ -4,6 +4,7 @@
 //! ambiguous without a picture, and the two side buttons are stored in a
 //! non-obvious order (front is 0x10, rear 0x08).
 
+use super::macros::Change;
 use super::super::theme::Palette;
 use super::super::widgets::{self, GAP};
 use crate::hardware::{ButtonAction, Profile, BUTTONS};
@@ -102,6 +103,31 @@ impl State {
         let Message::Changed(index, slot) = message;
         if index < self.slots.len() {
             self.slots[index] = slot;
+        }
+    }
+
+    /// React to a change made on the Macros page without rebuilding from the
+    /// profile, which would discard a button edit the user made but has not
+    /// applied yet. A rename follows the name into whichever slot pointed at
+    /// it; a delete falls back to `Keep`, since the macro is still on the
+    /// device until that button is reassigned. Every other slot -- including
+    /// ones the user is still editing -- is left untouched.
+    pub fn sync(&mut self, change: &Change) {
+        match change {
+            Change::Renamed { from, to } => {
+                for slot in &mut self.slots {
+                    if *slot == Slot::Library(from.clone()) {
+                        *slot = Slot::Library(to.clone());
+                    }
+                }
+            }
+            Change::Deleted(name) => {
+                for slot in &mut self.slots {
+                    if *slot == Slot::Library(name.clone()) {
+                        *slot = Slot::Keep;
+                    }
+                }
+            }
         }
     }
 }

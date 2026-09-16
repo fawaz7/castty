@@ -191,6 +191,69 @@ fn buttons_round_trip_plain_actions() {
     assert_eq!(BUTTONS.len(), 6);
 }
 
+/// A rename on the Macros page must follow the name into whichever slot
+/// pointed at it, without touching the profile at all.
+#[test]
+fn sync_follows_a_rename_into_the_matching_slot() {
+    let mut state =
+        buttons::State { slots: std::array::from_fn(|_| buttons::Slot::Action(ButtonAction::Disabled)) };
+    state.slots[2] = buttons::Slot::Library("Old".into());
+
+    state.sync(&castty::iced_ui::pages::macros::Change::Renamed {
+        from: "Old".into(),
+        to: "New".into(),
+    });
+
+    assert_eq!(state.slots[2], buttons::Slot::Library("New".into()));
+}
+
+/// A macro deleted from the library is still on the mouse until the button is
+/// reassigned, so its slot must fall back to "keep", not lose the assignment.
+#[test]
+fn sync_turns_a_deleted_macros_slot_into_keep() {
+    let mut state =
+        buttons::State { slots: std::array::from_fn(|_| buttons::Slot::Action(ButtonAction::Disabled)) };
+    state.slots[4] = buttons::Slot::Library("Gone".into());
+
+    state.sync(&castty::iced_ui::pages::macros::Change::Deleted("Gone".into()));
+
+    assert_eq!(state.slots[4], buttons::Slot::Keep);
+}
+
+/// A button edit the user made but has not applied yet must survive a library
+/// change to an unrelated macro -- syncing must not fall back to rebuilding
+/// from the profile, which would revert it.
+#[test]
+fn sync_leaves_an_unapplied_edit_untouched() {
+    let mut state =
+        buttons::State { slots: std::array::from_fn(|_| buttons::Slot::Action(ButtonAction::Disabled)) };
+    state.slots[0] = buttons::Slot::Action(ButtonAction::Mouse(0x02));
+
+    state.sync(&castty::iced_ui::pages::macros::Change::Renamed {
+        from: "Old".into(),
+        to: "New".into(),
+    });
+
+    assert_eq!(state.slots[0], buttons::Slot::Action(ButtonAction::Mouse(0x02)));
+}
+
+/// A slot assigned to a different macro must not react to a change that
+/// doesn't name it.
+#[test]
+fn sync_leaves_slots_for_other_macros_untouched() {
+    let mut state =
+        buttons::State { slots: std::array::from_fn(|_| buttons::Slot::Action(ButtonAction::Disabled)) };
+    state.slots[1] = buttons::Slot::Library("Other".into());
+
+    state.sync(&castty::iced_ui::pages::macros::Change::Renamed {
+        from: "Old".into(),
+        to: "New".into(),
+    });
+    state.sync(&castty::iced_ui::pages::macros::Change::Deleted("Unrelated".into()));
+
+    assert_eq!(state.slots[1], buttons::Slot::Library("Other".into()));
+}
+
 use castty::iced_ui::pages::macros as macros_page;
 
 /// Saving a draft under a new name must move the entry, not leave a copy.
@@ -277,6 +340,12 @@ fn the_first_recorded_event_has_zero_delay() {
     let mut state = macros_page::State::default();
 
     state.update(macros_page::Message::New, &mut library);
+    // Seed a stale `last` from well before the recording starts, so the
+    // assertion actually constrains RecordToggled's reset rather than just
+    // observing a fresh Draft's default: without the reset, the first event's
+    // delay would be computed against this timestamp instead of `None`.
+    state.editing.as_mut().unwrap().last =
+        Some(std::time::Instant::now() - std::time::Duration::from_secs(5));
     state.update(macros_page::Message::RecordToggled, &mut library);
     state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
 
@@ -296,6 +365,24 @@ fn a_release_with_no_matching_press_is_not_recorded() {
     state.update(macros_page::Message::RecordToggled, &mut library);
     state.update(macros_page::Message::KeyPressed(0x04, false), &mut library);
     assert_eq!(state.draft_events(), 0);
+}
+
+/// Auto-repeat sends a fresh press for every tick a key is held; only the
+/// first is a keystroke, so holding "a" must not record it twenty times.
+#[test]
+fn held_key_auto_repeat_is_not_recorded_as_repeated_presses() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    assert_eq!(state.draft_events(), 1, "repeats of a still-held key must not be recorded");
+
+    state.update(macros_page::Message::KeyPressed(0x04, false), &mut library);
+    assert_eq!(state.draft_events(), 2);
 }
 
 /// `Timing::None` promises every delay is zero; leaving `Delay` must zero the

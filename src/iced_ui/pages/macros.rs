@@ -147,7 +147,11 @@ impl State {
                     return false;
                 };
                 if pressed {
-                    draft.down.insert(key);
+                    if !draft.down.insert(key) {
+                        // Auto-repeat sends a fresh KeyPressed for every tick
+                        // a key is held; only the first one is a keystroke.
+                        return false;
+                    }
                 } else if !draft.down.remove(&key) {
                     // No press for this key was recorded -- most likely a
                     // focused widget (the name field) ate the press but iced

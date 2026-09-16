@@ -175,24 +175,8 @@ impl Castty {
                     // discard button edits the user made but has not applied
                     // yet, while `dirty` stayed true and the next Apply wrote
                     // the reverted assignment to flash.
-                    match self.macros.last_change.take() {
-                        Some(pages::macros::Change::Renamed { from, to }) => {
-                            for slot in &mut self.buttons.slots {
-                                if *slot == pages::buttons::Slot::Library(from.clone()) {
-                                    *slot = pages::buttons::Slot::Library(to.clone());
-                                }
-                            }
-                        }
-                        Some(pages::macros::Change::Deleted(name)) => {
-                            // The macro stays on the device until the button is
-                            // reassigned, so this becomes "keep", not "none".
-                            for slot in &mut self.buttons.slots {
-                                if *slot == pages::buttons::Slot::Library(name.clone()) {
-                                    *slot = pages::buttons::Slot::Keep;
-                                }
-                            }
-                        }
-                        None => {}
+                    if let Some(change) = self.macros.last_change.take() {
+                        self.buttons.sync(&change);
                     }
                 }
             }
