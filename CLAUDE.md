@@ -4,27 +4,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Goal: `castty`, a Linux desktop application (Rust, iced) that configures the Mionix Castor mouse (LED colour,
-DPI, polling rate, button mapping). No Linux tool for this device exists — not in OpenRGB, not elsewhere —
-so the protocol is being derived from scratch.
+`castty` is a Linux desktop application (Rust, iced) that configures the Mionix Castor mouse. **Version
+1.0.0, shipped and public** at `github.com/fawaz7/castty`. No other Linux tool supports this device —
+not OpenRGB, not libratbag — so the protocol was derived from scratch.
 
-**The protocol is cracked and verified against hardware.** LED colour can be set from Linux with no Wine
-involved. See `PROTOCOL.md` for the wire format — read it before touching anything device-related.
+**The protocol is cracked, verified against hardware, and complete for every setting the vendor
+software exposes**: per-LED colour, effects, rainbow, DPI, polling rate, angle snapping/tuning,
+lift-off, button mapping, macros, profiles, surface analyzer. Read `research/PROTOCOL.md` before
+touching anything device-related.
 
-What exists:
-- `PROTOCOL.md` — the wire protocol. Authoritative; keep it updated as fields are decoded.
-- `captures/*.bin` — three golden 1041-byte profile blobs (red/green/blue) captured from the vendor app.
-  Use these as regression fixtures for the decoder; they are the only record of known-good frames.
-- `tools/castty_probe.py` — research probe. Replays a fixture with substituted RGB. `python3
-  tools/castty_probe.py RR GG BB`. Proves the pipeline; not the real implementation.
-- Vendor binaries (see "Reverse engineering the vendor software").
+The repository is split deliberately:
 
-**No Rust crate yet.** The build commands below are the intended layout; verify against `Cargo.toml` once
-it exists and rewrite that section when it does.
+- **`research/`** — the reverse engineering, published so it is usable without the app. Contains
+  `PROTOCOL.md` (authoritative; keep it updated as fields are decoded), `captures/` (the actual
+  frames, plus gzipped session logs), and `tools/` (the capture rig: `hidsnoop.c`,
+  `capture-vendor-app.sh`, `decode_capture.py`, `castty_probe.py`). Each directory has its own README.
+- **`src/`** — the application. `hardware/` owns the protocol, `iced_ui/` the interface.
+- **`tools/`** — development tooling only (`generate-icons.sh`, `screenshot-gui.sh`).
+- Vendor binaries are gitignored and must stay that way (see "Reverse engineering the vendor software").
 
-Still to decode before the GUI can be feature-complete: LED effect modes (only solid `0x01` seen), DPI
-step encoding, polling rate, lift-off distance, and button/macro mapping. Each needs another capture round
-with the vendor app — the rig is already set up and reproducible.
+Remaining unknowns are a handful of constants with no observed effect, listed with their confidence
+levels in `research/PROTOCOL.md`. Nothing user-facing is missing.
 
 ## Verified hardware facts
 
@@ -59,7 +59,11 @@ behavior contradicts them.
 
 ## Reverse engineering the vendor software
 
-Two vendor artifacts are kept in the repo root:
+Only needed to decode *new* fields; everything the vendor software exposes is already mapped. The
+full method is written up for outside readers in `research/README.md` — that is the canonical
+description now, and this section is the short internal version.
+
+Two vendor artifacts are kept in the repo root, **gitignored and never to be committed**:
 
 - **`CASTOR+Software+V1.44.zip` — the correct, primary target.** Unzips to a *portable* `CASTOR Software.exe`
   (2 MB, no installer). This is the last original-Castor release and matches the `1316` device.
@@ -82,25 +86,31 @@ Wine translates `HidD_SetFeature` into hidraw `HIDIOCSFEATURE` ioctls on the Lin
 be run **natively against the real mouse on this machine** and its traffic captured. This is the fastest route
 to a byte map — far faster than reading decompiled MFC.
 
-Prepared under the session scratchpad (`hidsnoop.c`, `hidsnoop.so`, `60-mionix-castor.rules`, prefix `wp/`):
-
-1. **udev rule** `60-mionix-castor.rules` grants `uaccess` on `22d4:1316`. Required for both the capture and
-   the finished tool — `/dev/hidraw*` is `root:root 0600` by default.
-2. **Wine prefix** must whitelist the device, or winebus hides it (non-gamepad HID is excluded by default):
-   `HKLM\System\CurrentControlSet\Services\winebus\Parameters` → `EnableHidraw` = `22d4/1316`
-   (format is `vid/pid`; the Proton equivalent is `PROTON_ENABLE_HIDRAW=0x22d4/0x1316`).
-3. **`hidsnoop.so`** is an `LD_PRELOAD` shim wrapping `ioctl()`, hex-dumping every `HIDIOCSFEATURE` (before the
-   call) and `HIDIOCGFEATURE` (after), to `$HIDSNOOP_LOG`. Preferred over usbmon: it needs no root and logs the
-   exact buffers the app passes, already framed per report.
+The rig is committed under `research/tools/` and `capture-vendor-app.sh` does all of it — build the
+shim, set the registry key, launch the app:
 
 ```sh
-export WINEPREFIX=<scratch>/wp
-LD_PRELOAD=<scratch>/hidsnoop.so HIDSNOOP_LOG=<scratch>/cap.log \
-  wine "CASTOR Software V1.44/CASTOR Software.exe"
+APP_DIR="$HOME/CASTOR Software V1.44" WORK=/tmp/castor-capture \
+  research/tools/capture-vendor-app.sh
+python3 research/tools/decode_capture.py /tmp/castor-capture/capture.log --profile 0
 ```
 
-Method: change **one** setting at a time in the GUI, then diff consecutive `SET_FEATURE` dumps. That isolates
-which byte carries which field almost immediately.
+Three prerequisites, each of which cost real time to find:
+
+1. **udev rule** `packaging/60-mionix-castor.rules` grants `uaccess` on `22d4:1316`. Required for both the
+   capture and the finished tool — `/dev/hidraw*` is `root:root 0600` by default.
+2. **Wine hides this device**, and the documented knob does *not* help: interface 1's descriptor leads with a
+   keyboard collection, and `is_hidraw_enabled()` blanket-rejects mouse/keyboard hidraw devices **before** it
+   consults the `EnableHidraw` multi-string. The per-device override is checked first and does work:
+   `HKLM\System\CurrentControlSet\Services\WineBus\Devices\22d4/1316` → `Hidraw` (REG_DWORD) = 1.
+   Subkey name format is `%04x/%04x`, lowercase. The capture script sets this.
+3. **`hidsnoop.c`** is an `LD_PRELOAD` shim wrapping `ioctl()`, hex-dumping every `HIDIOCSFEATURE` (snapshotted
+   before the call) and `HIDIOCGFEATURE` (after), to `$HIDSNOOP_LOG`. Preferred over usbmon: no root needed, and
+   it logs the exact buffers the app passes, already framed per report. `decode_capture.py` parses columns 8–55
+   of its hexdump lines, so that formatting is load-bearing.
+
+Method: change **one** setting at a time in the GUI, press Apply, then diff consecutive `SET_FEATURE` dumps.
+`decode_capture.py` does the diffing. That isolates which byte carries which field almost immediately.
 
 ### Safety
 
@@ -145,8 +155,11 @@ cargo build --release
 ```
 
 `src/main.rs` launches the GUI when given no arguments, and acts as a CLI otherwise: `info`,
-`led <RRGGBB>`, `mode <solid|strobe>`, `dpi <1|2|3> <value>`, `surface`, `reset`. The CLI stays useful
-for scripting and for working on the hardware layer without a display.
+`led <RRGGBB>`, `mode <solid|blinking|pulsating|breathing> [rainbow]`, `dpi <1|2|3> <value>`,
+`surface`, `reset`, plus `help` and `version`. `-p <1-5>` selects a profile. `help`, `version` and an
+unrecognised command are answered **before** `Device::open()`, so they work with no mouse attached —
+keep it that way. The CLI stays useful for scripting and for working on the hardware layer without a
+display.
 
 ### UI layer
 
@@ -178,7 +191,7 @@ measures what its size says, the tab bar is a fixed strip, Lighting fits the def
 PNG of every page and several states to `target/ui-snapshots/`. **Look at those PNGs after any layout
 change**; a green suite proves the logic, not the picture.
 
-`tests/profile.rs` runs entirely against the captured blobs in `captures/`. The important one is
+`tests/profile.rs` runs entirely against the captured blobs in `research/captures/`. The important one is
 `recolouring_reproduces_the_captured_transition`: it takes the frame the vendor app sent for red,
 recolours it, and requires the result to equal the frame it sent for green. A passing encode is
 therefore a frame the device has actually accepted. Prefer adding tests in that style -- assertions
@@ -186,7 +199,7 @@ against real captured frames -- over synthesising expected bytes by hand.
 
 ### Ruled out — do not re-investigate
 
-`PROTOCOL.md` records these as tested negatives, with the evidence. They cost real time to establish:
+`research/PROTOCOL.md` records these as tested negatives, with the evidence. They cost real time to establish:
 
 - **Effect speed is not adjustable.** Fixed in firmware.
 - **Per-LED effects are impossible.** Colour is per-LED; the mode byte is global, enforced by hardware.
@@ -195,7 +208,7 @@ against real captured frames -- over synthesising expected bytes by hand.
 
 ### Hardware notes
 
-- The device has **no read path** (see PROTOCOL.md). Current settings cannot be queried, so state is
+- The device has **no read path** (see research/PROTOCOL.md). Current settings cannot be queried, so state is
   persisted to `$XDG_CONFIG_HOME/castty/profile0.bin` and seeded from the factory-default blob, which
   is embedded in the binary via `include_bytes!`.
 - `Profile` keeps the bytes it decoded from and patches only known fields on encode, so unknown
@@ -215,15 +228,22 @@ against real captured frames -- over synthesising expected bytes by hand.
   (`iced_ui::APP_ID`), the desktop entry's basename, its `Icon` key and its `StartupWMClass` must all
   stay equal or the shell shows a placeholder icon for the running window; a test in
   `src/iced_ui/mod.rs` checks this.
-- `captures/*.bin` — device frames used as test fixtures. Every protocol claim should be checkable
+- `research/captures/*.bin` — device frames used as test fixtures. Every protocol claim should be checkable
   against one of these.
-- `captures/*.log.gz` — raw capture sessions, gzipped (7.2 MB to 140 KB). `tools/decode_capture.py`
+- `research/captures/sessions/*.log.gz` — raw capture sessions, gzipped (7.2 MB to 140 KB).
+  `research/tools/decode_capture.py`
   reads either form.
+- `docs/screenshots/*.png` — README screenshots, regenerated from `target/ui-snapshots/` after a
+  layout change (`cargo test --lib layout_tests`, then resize to 1200px wide). They are the headless
+  renderer's real output, not staged captures; keep it that way.
+- `LICENSE` (GPL-3.0 verbatim), `NOTICE.md` (the Mionix artwork carve-out and the credit request) and
+  `CONTRIBUTING.md`. The artwork in `resources/` is **not** GPL — it is Mionix's, included so the app
+  can show the device. Do not relicense it or imply otherwise.
 - The vendor binaries are **not** in git and must not be committed — see `.gitignore`.
 
 ## Vendor-app capture rig
 
-Only needed to decode *new* fields. `tools/capture-vendor-app.sh` has the known-good invocation and
-records the approaches that do not work; `tools/decode_capture.py` turns a capture into a field map.
-The vendor app is unstable under Wine and hangs periodically -- the log is flushed per report, so
-captures survive a hang.
+See "Reverse engineering the vendor software" above, and `research/README.md` for the full write-up.
+`research/tools/capture-vendor-app.sh` has the known-good invocation and records the approaches that do
+not work. The vendor app is unstable under Wine and hangs periodically -- the log is flushed per
+report, so captures survive a hang.
