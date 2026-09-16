@@ -385,6 +385,21 @@ fn held_key_auto_repeat_is_not_recorded_as_repeated_presses() {
     assert_eq!(state.draft_events(), 2);
 }
 
+/// The auto-repeat guard must not swallow a genuine second tap: releasing a
+/// key has to clear it from `down` so pressing it again is recorded.
+#[test]
+fn a_key_tapped_twice_records_both_presses() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, false), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    assert_eq!(state.draft_events(), 3, "both presses and the release between them must be recorded");
+}
+
 /// `Timing::None` promises every delay is zero; leaving `Delay` must zero the
 /// recorded gaps rather than either keeping them or discarding the recording.
 #[test]
