@@ -1,6 +1,6 @@
 //! Local persistence of profile state.
 //!
-//! The device has no read path (see PROTOCOL.md), so the current configuration
+//! The device has no read path (see research/PROTOCOL.md), so the current configuration
 //! only exists here. Both the CLI and the GUI go through this module so they
 //! cannot drift apart.
 

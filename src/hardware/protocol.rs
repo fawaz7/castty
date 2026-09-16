@@ -1,4 +1,4 @@
-//! Wire-protocol constants. Every value here is documented in `PROTOCOL.md`.
+//! Wire-protocol constants. Every value here is documented in `research/PROTOCOL.md`.
 
 pub const VID: u16 = 0x22d4;
 pub const PID: u16 = 0x1316;

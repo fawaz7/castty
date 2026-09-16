@@ -227,7 +227,7 @@ Also welcome:
 
 - Packaging (AUR, Flatpak, Nix, .deb)
 - Testing on other distributions and compositors
-- The few remaining unknowns in `PROTOCOL.md`
+- The few remaining unknowns in `research/PROTOCOL.md`
 - Porting the protocol into OpenRGB, libratbag or a kernel driver — genuinely, please
 
 ### Working on it

@@ -77,7 +77,7 @@ pub enum PollingRate {
 
 impl PollingRate {
     /// The stored byte is a divisor of 1000 Hz. Inferred from the order the
-    /// vendor GUI stepped through its rate list -- see PROTOCOL.md.
+    /// vendor GUI stepped through its rate list -- see research/PROTOCOL.md.
     pub fn from_byte(b: u8) -> Option<Self> {
         Some(match b {
             1 => PollingRate::Hz1000,

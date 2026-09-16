@@ -8,7 +8,7 @@ and of the rules that were learned the hard way.
 **Audience:** whoever picks up the redesign next. Assume they know Rust and
 have not seen this codebase.
 
-**Read alongside:** `PROTOCOL.md` (the wire protocol — authoritative),
+**Read alongside:** `research/PROTOCOL.md` (the wire protocol — authoritative),
 `CLAUDE.md` (project charter), and
 `docs/superpowers/specs/2026-09-16-castty-iced-ui-design.md` (the spec this UI
 was built from).
