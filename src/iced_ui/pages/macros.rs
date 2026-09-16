@@ -5,7 +5,7 @@
 //! area, so the capacity readout belongs on the page, before recording starts.
 
 use super::super::theme::Palette;
-use super::super::widgets::{self, GAP};
+use super::super::widgets::{self, size, GAP, UNIT};
 use crate::hardware::protocol::offset::MACRO_SLOTS;
 use crate::hardware::{keycode, MacroEvent, Profile};
 use crate::macros::{Library, NamedMacro, Timing};
@@ -243,7 +243,7 @@ pub fn view<'a>(
     palette: &Palette,
 ) -> Element<'a, Message> {
     let style = *palette;
-    let dim = palette.dim;
+    let danger = palette.danger;
     let (used, total) = slots_used(profile);
 
     if let Some(draft) = &state.editing {
@@ -261,7 +261,7 @@ pub fn view<'a>(
             },
         );
 
-        let mut events = column![].spacing(4.0);
+        let mut events = column![].spacing(UNIT);
         for event in &draft.events {
             let line = if draft.timing == Timing::Delay {
                 format!(
@@ -277,7 +277,7 @@ pub fn view<'a>(
                     if event.pressed { "down" } else { "up" }
                 )
             };
-            events = events.push(text(line).size(12.0));
+            events = events.push(text(line).size(size::CAPTION));
         }
 
         let mut editor = column![
@@ -287,6 +287,7 @@ pub fn view<'a>(
                 None::<&str>,
                 text_input("Macro name", &draft.name)
                     .on_input(Message::NameChanged)
+                    .size(size::BODY)
                     .width(Length::Fixed(220.0)),
             ),
             widgets::field(palette, "Timing", None::<&str>, timing),
@@ -294,55 +295,58 @@ pub fn view<'a>(
         .spacing(GAP);
 
         if let Some(error) = &state.error {
-            let danger = palette.danger;
             editor = editor.push(
-                text(error.clone()).size(12.0).style(move |_t| text::Style { color: Some(danger) }),
+                text(error.clone())
+                    .size(size::CAPTION)
+                    .style(move |_t| text::Style { color: Some(danger) }),
             );
         }
 
         let editor = editor
             .push(
                 row![
-                    button(text(if state.recording { "Stop" } else { "Record" }).size(14.0))
-                        .padding([8.0, 18.0])
+                    button(text(if state.recording { "Stop" } else { "Record" }).size(size::BODY))
+                        .padding([2.0 * UNIT, 4.5 * UNIT])
                         .style(move |_t, status| widgets::subtle(&style, status))
                         .on_press(Message::RecordToggled),
-                    button(text("Save").size(14.0))
-                        .padding([8.0, 18.0])
+                    button(text("Save").size(size::BODY))
+                        .padding([2.0 * UNIT, 4.5 * UNIT])
                         .style(move |_t, status| widgets::primary(&style, status))
                         .on_press(Message::Save),
-                    button(text("Cancel").size(14.0))
-                        .padding([8.0, 18.0])
+                    button(text("Cancel").size(size::BODY))
+                        .padding([2.0 * UNIT, 4.5 * UNIT])
                         .style(move |_t, status| widgets::subtle(&style, status))
                         .on_press(Message::Cancel),
                 ]
-                .spacing(8.0),
+                .spacing(2.0 * UNIT),
             )
-            .push(
-                text(if state.recording {
-                    "Recording: type the keys you want"
+            .push(widgets::caption(
+                palette,
+                if state.recording {
+                    "Recording. Type the keys you want; press Stop when done"
                 } else {
                     "Press Record, then type"
-                })
-                .size(12.0)
-                .style(move |_t| text::Style { color: Some(dim) }),
-            )
+                },
+            ))
             .push(events);
 
-        return column![
-            widgets::card(palette, "Edit macro", None, editor),
-        ]
-        .spacing(GAP)
-        .into();
+        return widgets::card(
+            palette,
+            "Edit macro",
+            Some(format!(
+                "{used} of {total} storage slots used on this profile. Each macro also uses one as a separator"
+            )),
+            editor,
+        );
     }
 
     let mut list = column![].spacing(GAP);
     if library.macros.is_empty() {
-        list = list.push(
-            text("No macros yet. Record one, then assign it on the Buttons page.")
-                .size(13.0)
-                .style(move |_t| text::Style { color: Some(dim) }),
-        );
+        list = list.push(widgets::muted(
+            palette,
+            "No macros yet. Record one, then assign it on the Buttons page.",
+            size::LABEL,
+        ));
     }
     for entry in &library.macros {
         let name = entry.name.clone();
@@ -350,49 +354,39 @@ pub fn view<'a>(
         list = list.push(
             row![
                 column![
-                    text(entry.name.clone()).size(14.0),
-                    text(summarise(entry))
-                        .size(12.0)
-                        .style(move |_t| text::Style { color: Some(dim) }),
+                    text(entry.name.clone()).size(size::BODY),
+                    widgets::caption(palette, summarise(entry)),
                 ]
-                .spacing(3.0)
+                .spacing(UNIT / 2.0)
                 .width(Length::Fill),
-                button(text("Edit").size(13.0))
-                    .padding([7.0, 14.0])
+                button(text("Edit").size(size::LABEL))
+                    .padding([1.5 * UNIT, 3.5 * UNIT])
                     .style(move |_t, status| widgets::subtle(&style, status))
                     .on_press(Message::Edit(edit_name.clone())),
-                button(text("Delete").size(13.0))
-                    .padding([7.0, 14.0])
+                button(text("Delete").size(size::LABEL))
+                    .padding([1.5 * UNIT, 3.5 * UNIT])
                     .style(move |_t, status| widgets::destructive(&style, status))
                     .on_press(Message::Delete(name.clone())),
             ]
-            .spacing(8.0)
+            .spacing(2.0 * UNIT)
             .align_y(iced::Alignment::Center),
         );
     }
 
-    let new_button = button(text("New macro").size(14.0))
-        .padding([8.0, 18.0])
+    let new_button = button(text("New macro").size(size::BODY))
+        .padding([2.0 * UNIT, 4.5 * UNIT])
         .style(move |_t, status| widgets::primary(&style, status))
         .on_press(Message::New);
 
-    // The capacity line depends on `profile`, which view borrows for only the
-    // call's own scope, so it cannot supply `card`'s `&'a str` subtitle -- it
-    // is folded into the body instead, where an owned `text` is fine.
-    let capacity = text(format!(
-        "{used} of {total} storage slots used on this profile. Each macro also uses one as a separator."
-    ))
-    .size(12.0)
-    .style(move |_t| text::Style { color: Some(dim) });
-
-    column![
-        widgets::card(
-            palette,
-            "Macros",
-            None,
-            column![capacity, new_button, list].spacing(GAP),
-        ),
-    ]
-    .spacing(GAP)
-    .into()
+    // The capacity readout belongs to the profile and matters before
+    // recording starts, so it is the card's subtitle: visible first, above
+    // the button that would consume it.
+    widgets::card(
+        palette,
+        "Library",
+        Some(format!(
+            "{used} of {total} storage slots used on this profile. Each macro also uses one as a separator"
+        )),
+        column![new_button, list].spacing(GAP),
+    )
 }

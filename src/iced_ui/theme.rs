@@ -182,13 +182,15 @@ impl Palette {
         }
     }
 
-    pub fn sidebar(&self) -> iced::widget::container::Style {
+    /// The tab bar and footer: a shade apart from the page so they read as
+    /// fixed chrome rather than content.
+    pub fn chrome(&self) -> iced::widget::container::Style {
         iced::widget::container::Style {
             background: Some(Background::Color(if self.dark {
                 Color {
-                    r: self.bg.r * 0.85,
-                    g: self.bg.g * 0.85,
-                    b: self.bg.b * 0.85,
+                    r: self.bg.r * 0.8,
+                    g: self.bg.g * 0.8,
+                    b: self.bg.b * 0.8,
                     a: 1.0,
                 }
             } else {

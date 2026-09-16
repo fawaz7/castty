@@ -5,7 +5,7 @@
 //! what the mouse currently holds.
 
 use super::super::theme::Palette;
-use super::super::widgets::{self, GAP};
+use super::super::widgets::{self, size, GAP, STACK, UNIT};
 use crate::config;
 use crate::hardware::Profile;
 use iced::widget::{button, column, row, text, text_input};
@@ -122,27 +122,25 @@ pub fn view<'a>(
     palette: &Palette,
 ) -> Element<'a, Message> {
     let style = *palette;
-    let dim = palette.dim;
 
     let mut rows = column![].spacing(GAP);
     for (i, profile) in profiles.iter().enumerate() {
         let active = i == current;
         rows = rows.push(
             row![
-                text(format!("{}", i + 1)).size(13.0).width(Length::Fixed(20.0)),
+                widgets::muted(palette, format!("{}", i + 1), size::LABEL),
                 text_input("Profile name", &profile.name)
                     .on_input(move |name| Message::NameChanged(i, name))
-                    .width(Length::Fixed(200.0)),
-                text(if active { "active" } else { "" })
-                    .size(12.0)
-                    .style(move |_t| text::Style { color: Some(dim) })
-                    .width(Length::Fill),
-                button(text(if active { "Editing" } else { "Edit" }).size(13.0))
-                    .padding([7.0, 14.0])
+                    .size(size::BODY)
+                    .width(Length::Fixed(220.0)),
+                widgets::caption(palette, if active { "Selected in the top bar" } else { "" }),
+                widgets::push_right(),
+                button(text(if active { "Editing" } else { "Edit" }).size(size::LABEL))
+                    .padding([1.5 * UNIT, 3.5 * UNIT])
                     .style(move |_t, status| widgets::segment(&style, status, active))
                     .on_press(Message::Select(i)),
             ]
-            .spacing(10.0)
+            .spacing(3.0 * UNIT)
             .align_y(iced::Alignment::Center),
         );
     }
@@ -153,26 +151,26 @@ pub fn view<'a>(
     let restore: Element<'_, Message> = if confirming {
         let danger = palette.danger;
         column![
-            text("Resets all five profiles to their factory settings. Nothing reaches the device until you press Apply, and this cannot be undone once you do.")
-                .size(12.0)
+            text("Resets all five profiles to their factory settings. Nothing reaches the mouse until you press Apply, and it cannot be undone once you do.")
+                .size(size::CAPTION)
                 .style(move |_t| text::Style { color: Some(danger) }),
             row![
-                button(text("Overwrite all profiles").size(13.0))
-                    .padding([8.0, 16.0])
+                button(text("Overwrite all five profiles").size(size::LABEL))
+                    .padding([2.0 * UNIT, 4.0 * UNIT])
                     .style(move |_t, status| widgets::destructive(&style, status))
                     .on_press(Message::RestoreConfirmed),
-                button(text("Cancel").size(13.0))
-                    .padding([8.0, 16.0])
+                button(text("Cancel").size(size::LABEL))
+                    .padding([2.0 * UNIT, 4.0 * UNIT])
                     .style(move |_t, status| widgets::subtle(&style, status))
                     .on_press(Message::RestoreCancelled),
             ]
-            .spacing(10.0),
+            .spacing(2.5 * UNIT),
         ]
-        .spacing(10.0)
+        .spacing(2.5 * UNIT)
         .into()
     } else {
-        button(text("Restore factory defaults").size(13.0))
-            .padding([8.0, 16.0])
+        button(text("Restore factory defaults").size(size::LABEL))
+            .padding([2.0 * UNIT, 4.0 * UNIT])
             .style(move |_t, status| widgets::destructive(&style, status))
             .on_press(Message::RestoreRequested)
             .into()
@@ -181,17 +179,17 @@ pub fn view<'a>(
     column![
         widgets::card(
             palette,
-            "Profiles",
-            Some("Up to ten characters each, stored on the mouse"),
+            "Names",
+            Some("Up to ten characters each, stored on the mouse. These are the names last written, since the mouse cannot be asked"),
             rows,
         ),
         widgets::card(
             palette,
             "Reset",
-            Some("Resets all five profiles to their factory settings on the next Apply"),
+            Some("Puts all five profiles back to their factory settings on the next Apply"),
             restore,
         ),
     ]
-    .spacing(GAP)
+    .spacing(STACK)
     .into()
 }

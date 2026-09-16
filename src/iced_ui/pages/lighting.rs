@@ -7,8 +7,8 @@
 use super::super::colour_picker::{self, ColourPicker};
 use super::super::theme::Palette;
 use crate::hardware::{Effect, LedMode, Profile, EFFECTS};
-use super::super::widgets::{self, GAP};
-use iced::widget::{canvas, checkbox, column, pick_list, text};
+use super::super::widgets::{self, size, GAP, STACK};
+use iced::widget::{canvas, checkbox, column, pick_list, row};
 use iced::{Element, Length};
 
 /// Measured on hardware against a stopwatch, not guessed. Re-measure rather
@@ -20,6 +20,10 @@ const PULSE_GAP_S: f32 = 0.12;
 const PULSE_DARK: f32 = 0.36;
 const BREATHE_S: f32 = 6.0;
 const RAINBOW_S: f32 = 5.0;
+
+/// Tall enough to pick a colour precisely, short enough that the Colour and
+/// Effect cards both fit beside the hero at the default window height.
+const PICKER_HEIGHT: f32 = 170.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
@@ -203,7 +207,6 @@ fn shade(rgb: (u8, u8, u8), brightness: f32, hue: Option<f32>) -> (u8, u8, u8) {
 
 pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
     let usable = state.mode != Mode::Off && !state.rainbow;
-    let dim = palette.dim;
 
     let selector = widgets::segmented(
         palette,
@@ -219,10 +222,12 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
         },
     );
 
-    let mut colour_body = column![selector].spacing(GAP);
-
+    // The mode selector, the LED selector (Split only) and the hex readout
+    // share one line so the picker below gets the room, and the whole page
+    // fits the default window without scrolling.
+    let mut selectors = row![selector].spacing(GAP).align_y(iced::Alignment::Center);
     if state.mode == Mode::Split {
-        colour_body = colour_body.push(widgets::segmented(
+        selectors = selectors.push(widgets::segmented(
             palette,
             vec![
                 ("Scroll wheel", Message::TargetChanged(Target::Wheel)),
@@ -231,8 +236,13 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             usize::from(state.target == Target::Logo),
         ));
     }
+    let (r, g, b) = colour_picker::to_rgb(state.hsv);
+    selectors = selectors
+        .push(widgets::push_right())
+        .push(widgets::muted(palette, format!("#{r:02x}{g:02x}{b:02x}"), size::LABEL));
 
-    colour_body = colour_body.push(
+    let colour_body = column![
+        selectors,
         Element::from(
             canvas(ColourPicker {
                 hsv: state.hsv,
@@ -240,17 +250,11 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 palette: *palette,
             })
             .width(Length::Fill)
-            .height(Length::Fixed(200.0)),
+            .height(Length::Fixed(PICKER_HEIGHT)),
         )
         .map(Message::ColourChanged),
-    );
-
-    let (r, g, b) = colour_picker::to_rgb(state.hsv);
-    colour_body = colour_body.push(
-        text(format!("#{r:02x}{g:02x}{b:02x}"))
-            .size(13.0)
-            .style(move |_t| text::Style { color: Some(dim) }),
-    );
+    ]
+    .spacing(GAP);
 
     let effect_body = column![
         widgets::field(
@@ -263,7 +267,8 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 |label| Message::EffectChanged(
                     EFFECTS.into_iter().find(|e| e.label() == label).unwrap_or(Effect::Solid)
                 ),
-            ),
+            )
+            .text_size(size::BODY),
         ),
         widgets::field(
             palette,
@@ -292,6 +297,6 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             effect_body,
         ),
     ]
-    .spacing(GAP)
+    .spacing(STACK)
     .into()
 }

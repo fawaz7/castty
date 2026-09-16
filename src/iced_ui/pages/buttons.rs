@@ -6,10 +6,10 @@
 
 use super::macros::Change;
 use super::super::theme::Palette;
-use super::super::widgets::{self, GAP};
+use super::super::widgets::{self, size, GAP};
 use crate::hardware::{ButtonAction, Profile, BUTTONS};
 use crate::macros::{Library, Timing};
-use iced::widget::{column, pick_list, text};
+use iced::widget::{column, pick_list};
 use iced::Element;
 use std::sync::OnceLock;
 
@@ -186,27 +186,15 @@ pub fn view<'a>(state: &'a State, library: &'a Library, palette: &Palette) -> El
                     )
                 };
                 Message::Changed(i, slot)
-            }),
+            })
+            .text_size(size::BODY),
         ));
     }
 
-    let numbered = column![
-        text("Numbers match the callouts on the mouse.").size(12.0).style({
-            let dim = palette.dim;
-            move |_t| text::Style { color: Some(dim) }
-        }),
+    widgets::card(
+        palette,
+        "Assignments",
+        Some("Numbered to match the callouts on the mouse. Take care not to leave yourself without a left click"),
         rows,
-    ]
-    .spacing(GAP);
-
-    column![
-        widgets::card(
-            palette,
-            "Buttons",
-            Some("Take care leaving yourself without a left click"),
-            numbered,
-        ),
-    ]
-    .spacing(GAP)
-    .into()
+    )
 }

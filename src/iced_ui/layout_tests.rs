@@ -55,7 +55,21 @@ fn every_page_lays_out_a_visible_content_area() {
             content.y < HEIGHT * 0.4,
             "{page:?} content starts too far down the window: {content:?}"
         );
+        assert!(
+            content.width <= widgets::MEASURE + 1.0,
+            "{page:?} content is wider than the measure: {content:?}"
+        );
     }
+}
+
+/// With no hero, the content column is centred rather than left-aligned.
+#[test]
+fn the_about_page_centres_its_content() {
+    let app = app_on(Page::About);
+    let mut ui = simulate(&app);
+    let content = bounds_of(&mut ui, "page-content");
+    let centre = content.x + content.width / 2.0;
+    assert!((centre - WIDTH / 2.0).abs() < 2.0, "About content is off-centre: {content:?}");
 }
 
 /// The hero is the app's signature element. Large must be large, small must
@@ -72,8 +86,9 @@ fn the_hero_measures_what_its_size_says() {
                 "{page:?} large hero is smaller than the artwork: {b:?}"
             ),
             (Hero::Small, Some(b)) => assert!(
-                (120.0..=360.0).contains(&b.height) && b.width >= 160.0,
-                "{page:?} small hero is not small: {b:?}"
+                (b.width - Hero::SMALL_WIDTH).abs() < 1.0
+                    && (b.height - Hero::SMALL_HEIGHT).abs() < 1.0,
+                "{page:?} small hero is not the fixed stage: {b:?}"
             ),
             (Hero::None, None) => {}
             (size, b) => panic!("{page:?} expects {size:?} hero, laid out {b:?}"),
@@ -120,20 +135,58 @@ fn the_footer_hugs_the_bottom_of_the_window() {
     );
 }
 
-/// Not an assertion: a picture of every page, so a layout change can be
-/// looked at rather than inferred. Rendered with the bundled Fira Sans, so
-/// text metrics differ slightly from a system font, but geometry does not.
+/// The Lighting page is the one people see first, and both of its cards
+/// must be on screen at the default window size without scrolling.
+#[test]
+fn the_lighting_page_fits_the_default_window_without_scrolling() {
+    let app = app_on(Page::Lighting);
+    let mut ui = simulate(&app);
+    let rainbow = ui.find("Rainbow").expect("the last field on the page").bounds();
+    let footer = bounds_of(&mut ui, "footer");
+    assert!(
+        rainbow.y + rainbow.height < footer.y,
+        "the Effect card runs off the bottom: {rainbow:?} vs footer {footer:?}"
+    );
+}
+
+/// Not an assertion: a picture of every page, plus the states a first
+/// render does not show, so a layout change can be looked at rather than
+/// inferred. Rendered with the bundled Fira Sans, so text metrics differ
+/// slightly from a system font, but geometry does not.
 #[test]
 fn write_a_snapshot_of_every_page() {
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/ui-snapshots");
     std::fs::create_dir_all(&dir).expect("snapshot directory");
     for page in Page::ALL {
-        let app = app_on(page);
-        let theme = app_theme(&app);
-        let mut ui = simulate(&app);
-        let shot = ui.snapshot(&theme).expect("render");
-        write_png(&dir.join(format!("{page:?}.png").to_lowercase()), &shot);
+        snapshot(&dir, &format!("{page:?}").to_lowercase(), app_on(page));
     }
+
+    let mut split = app_on(Page::Lighting);
+    split.lighting.update(pages::lighting::Message::ModeChanged(pages::lighting::Mode::Split));
+    snapshot(&dir, "lighting-split", split);
+
+    let mut paper = app_on(Page::Lighting);
+    paper.settings.theme = theme::Named::Paper;
+    snapshot(&dir, "lighting-paper", paper);
+
+    let mut separate = app_on(Page::Sensor);
+    separate.sensor.linked = false;
+    snapshot(&dir, "sensor-separate", separate);
+
+    let mut editing = app_on(Page::Macros);
+    editing.macros.update(pages::macros::Message::New, &mut editing.library);
+    snapshot(&dir, "macros-editing", editing);
+
+    let mut confirming = app_on(Page::Profiles);
+    confirming.profiles_page.update(&pages::profiles::Message::RestoreRequested);
+    snapshot(&dir, "profiles-confirming", confirming);
+}
+
+fn snapshot(dir: &std::path::Path, name: &str, app: Castty) {
+    let theme = app_theme(&app);
+    let mut ui = simulate(&app);
+    let shot = ui.snapshot(&theme).expect("render");
+    write_png(&dir.join(format!("{name}.png")), &shot);
 }
 
 /// `Snapshot` only exposes its pixels through a compare-or-create, so the

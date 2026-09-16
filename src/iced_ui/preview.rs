@@ -1,7 +1,14 @@
 //! The live mouse preview.
 //!
-//! Draws the body, the two recoloured LED cut-outs, a halo in the LED colour,
-//! and — on the buttons page — numbered callouts.
+//! Two canvases, stacked. [`Preview`] draws the halo in the LED colour, the
+//! body, and the two recoloured LED cut-outs. [`Callouts`] draws the numbered
+//! badges for the Buttons page over the top.
+//!
+//! They are separate widgets, not one, because of how iced renders a layer:
+//! quads, then paths, then images, then text, whatever order they were
+//! drawn in. A badge disc drawn after the body image from the same canvas
+//! still lands beneath it. Wrapping the second canvas in a clipping
+//! container starts a new layer, and only that puts the badges on top.
 
 use super::art::Art;
 use super::theme::Palette;
@@ -15,23 +22,45 @@ use std::rc::Rc;
 const BUTTON_MARKS: [(f32, f32); 6] = [
     (0.35, 0.22),  // left
     (0.66, 0.22),  // right
-    (0.51, 0.235), // wheel click — centre of the wheel, which spans 0.165-0.31
+    (0.51, 0.235), // wheel click: centre of the wheel, which spans 0.165-0.31
     (0.20, 0.36),  // side, front
     (0.20, 0.48),  // side, rear
-    (0.51, 0.40),  // DPI — the button below the wheel
+    (0.51, 0.40),  // DPI: the button below the wheel
 ];
 
-/// Breathing room around the artwork, so callouts near the edge are not clipped
-/// and the halo has somewhere to fade out.
-const INSET: f32 = 34.0;
+/// Breathing room around the artwork, so callouts near the edge are not
+/// clipped and the halo has somewhere to fade out. Proportional to the
+/// stage, within limits, so the small hero does not spend a third of its
+/// width on margin.
+fn inset(bounds: Rectangle) -> f32 {
+    (bounds.width.min(bounds.height) * 0.09).clamp(16.0, 34.0)
+}
+
+/// Where the artwork lands in a stage of this size: top-left corner and
+/// scale, preserving the aspect ratio and centring. Shared by both canvases
+/// so the badges cannot drift off the buttons.
+fn placement(bounds: Rectangle) -> (Point, f32) {
+    let art_w = super::art::WIDTH as f32;
+    let art_h = super::art::HEIGHT as f32;
+    let inset = inset(bounds);
+    let usable = Size::new(
+        (bounds.width - inset * 2.0).max(1.0),
+        (bounds.height - inset * 2.0).max(1.0),
+    );
+    let scale = (usable.width / art_w).min(usable.height / art_h);
+    let drawn = Size::new(art_w * scale, art_h * scale);
+    let origin = Point::new(
+        (bounds.width - drawn.width) / 2.0,
+        (bounds.height - drawn.height) / 2.0,
+    );
+    (origin, scale)
+}
 
 pub struct Preview {
     pub art: Rc<Art>,
     /// Colours after the effect's brightness has been applied.
     pub wheel: (u8, u8, u8),
     pub logo: (u8, u8, u8),
-    pub show_buttons: bool,
-    pub palette: Palette,
 }
 
 impl<Message> canvas::Program<Message> for Preview {
@@ -48,17 +77,8 @@ impl<Message> canvas::Program<Message> for Preview {
         let mut frame = Frame::new(renderer, bounds.size());
         let art_w = super::art::WIDTH as f32;
         let art_h = super::art::HEIGHT as f32;
-
-        let usable = Size::new(
-            (bounds.width - INSET * 2.0).max(1.0),
-            (bounds.height - INSET * 2.0).max(1.0),
-        );
-        let scale = (usable.width / art_w).min(usable.height / art_h);
+        let (origin, scale) = placement(bounds);
         let drawn = Size::new(art_w * scale, art_h * scale);
-        let origin = Point::new(
-            (bounds.width - drawn.width) / 2.0,
-            (bounds.height - drawn.height) / 2.0,
-        );
 
         // The halo is centred on the mouse and kept comfortably inside the
         // widget, so it fades to nothing rather than meeting an edge.
@@ -83,12 +103,52 @@ impl<Message> canvas::Program<Message> for Preview {
             frame.draw_image(self.art.logo.bounds(), &logo);
         });
 
-        // Callouts are drawn outside the artwork transform so their size stays
-        // constant however the window is resized.
-        if self.show_buttons {
-            draw_marks(&mut frame, origin, scale, &self.palette);
-        }
+        vec![frame.into_geometry()]
+    }
+}
 
+/// Numbered badges over each button, so the rows on the Buttons page can be
+/// matched to the physical mouse without guesswork. Drawn outside the
+/// artwork transform so their size stays constant however the window is
+/// resized.
+pub struct Callouts {
+    pub palette: Palette,
+}
+
+impl<Message> canvas::Program<Message> for Callouts {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &Self::State,
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let mut frame = Frame::new(renderer, bounds.size());
+        let (origin, scale) = placement(bounds);
+        const R: f32 = 13.0;
+        for (i, (fx, fy)) in BUTTON_MARKS.iter().enumerate() {
+            let centre = Point::new(
+                origin.x + fx * super::art::WIDTH as f32 * scale,
+                origin.y + fy * super::art::HEIGHT as f32 * scale,
+            );
+            frame.fill(&Path::circle(centre, R), Color::from_rgba(0.0, 0.0, 0.0, 0.72));
+            frame.stroke(
+                &Path::circle(centre, R),
+                Stroke::default().with_color(self.palette.accent).with_width(2.0),
+            );
+            frame.fill_text(Text {
+                content: (i + 1).to_string(),
+                position: centre,
+                color: Color::WHITE,
+                size: 13.0.into(),
+                align_x: iced::alignment::Horizontal::Center.into(),
+                align_y: iced::alignment::Vertical::Center,
+                ..Text::default()
+            });
+        }
         vec![frame.into_geometry()]
     }
 }
@@ -116,31 +176,5 @@ fn draw_glow(frame: &mut Frame, centre: Point, radius: f32, wheel: (u8, u8, u8),
             &Path::circle(centre, radius * t),
             Color::from_rgba(r, g, b, alpha),
         );
-    }
-}
-
-/// Numbered badges over each button, so the rows on the buttons page can be
-/// matched to the physical mouse without guesswork.
-fn draw_marks(frame: &mut Frame, origin: Point, scale: f32, palette: &Palette) {
-    const R: f32 = 14.0;
-    for (i, (fx, fy)) in BUTTON_MARKS.iter().enumerate() {
-        let centre = Point::new(
-            origin.x + fx * super::art::WIDTH as f32 * scale,
-            origin.y + fy * super::art::HEIGHT as f32 * scale,
-        );
-        frame.fill(&Path::circle(centre, R), Color::from_rgba(0.0, 0.0, 0.0, 0.7));
-        frame.stroke(
-            &Path::circle(centre, R),
-            Stroke::default().with_color(palette.accent).with_width(2.0),
-        );
-        frame.fill_text(Text {
-            content: (i + 1).to_string(),
-            position: centre,
-            color: Color::WHITE,
-            size: 14.0.into(),
-            align_x: iced::alignment::Horizontal::Center.into(),
-            align_y: iced::alignment::Vertical::Center,
-            ..Text::default()
-        });
     }
 }

@@ -33,6 +33,29 @@ pub enum Hero {
     None,
 }
 
+impl Hero {
+    /// Width of the hero column. The artwork is 320 wide (`art::WIDTH`) and
+    /// the canvas keeps a 34px inset around it, so Large draws the mouse at
+    /// about 1.1x natural size and Small at a little over half.
+    pub const LARGE_WIDTH: f32 = 420.0;
+    pub const SMALL_WIDTH: f32 = 240.0;
+    /// Small is a fixed stage rather than a band: tall enough for the
+    /// scaled artwork plus its inset, and nothing more.
+    pub const SMALL_HEIGHT: f32 = 280.0;
+
+    fn width(self) -> Option<f32> {
+        match self {
+            Hero::Large => Some(Self::LARGE_WIDTH),
+            Hero::Small => Some(Self::SMALL_WIDTH),
+            Hero::None => None,
+        }
+    }
+}
+
+/// Height of the tab bar and footer. Fixed: they are chrome, not content.
+const TAB_BAR_HEIGHT: f32 = 56.0;
+const FOOTER_HEIGHT: f32 = 32.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Lighting,
@@ -61,6 +84,20 @@ impl Page {
             Page::Macros => "Macros",
             Page::Profiles => "Profiles",
             Page::About => "About",
+        }
+    }
+
+    /// One line under the page title saying what the page is for. Sentence
+    /// case, no full stop needed on a fragment, and it describes what the
+    /// mouse does rather than what the widgets do.
+    fn blurb(self) -> &'static str {
+        match self {
+            Page::Lighting => "Colour and animation for the scroll wheel and logo LEDs",
+            Page::Sensor => "DPI steps, polling rate, tracking behaviour and the surface analyzer",
+            Page::Buttons => "What each of the six buttons does",
+            Page::Macros => "Key sequences that can be assigned to a button",
+            Page::Profiles => "The five profiles the mouse stores, and which one it is using",
+            Page::About => "Appearance and credits",
         }
     }
 
@@ -414,11 +451,11 @@ impl Castty {
 
     fn tab_bar(&self, palette: &Palette) -> Element<'_, Message> {
         let style = *palette;
-        let tabs = Page::ALL.iter().fold(row![].spacing(2.0), |acc, page| {
+        let tabs = Page::ALL.iter().fold(row![].spacing(widgets::UNIT / 2.0), |acc, page| {
             let selected = *page == self.page;
             acc.push(
-                button(text(page.label()).size(14.0))
-                    .padding([8.0, 16.0])
+                button(text(page.label()).size(widgets::size::BODY))
+                    .padding([2.0 * widgets::UNIT, 4.0 * widgets::UNIT])
                     .style(move |_t, status| widgets::segment(&style, status, selected))
                     .on_press(Message::PageSelected(*page)),
             )
@@ -428,18 +465,19 @@ impl Castty {
             (0..self.profiles.len()).map(|i| self.profile_label(i)).collect();
         let selected = names.get(self.current).cloned();
 
-        container(
+        let bar = container(
             row![
-                text("castty").size(18.0),
-                Space::new().width(Length::Fixed(18.0)),
+                text("castty").size(widgets::size::HEADING),
+                Space::new().width(Length::Fixed(widgets::STACK)),
                 tabs,
                 widgets::push_right(),
                 iced::widget::pick_list(names.clone(), selected, move |chosen| {
                     let index = names.iter().position(|n| *n == chosen).unwrap_or(0);
                     Message::ProfileSelected(index)
-                }),
-                button(text("Apply").size(14.0))
-                    .padding([9.0, 22.0])
+                })
+                .text_size(widgets::size::BODY),
+                button(text("Apply").size(widgets::size::BODY))
+                    .padding([2.0 * widgets::UNIT, 5.0 * widgets::UNIT])
                     .style(move |_t, status| widgets::primary(&style, status))
                     .on_press_maybe(
                         can_apply(&self.dirty, self.current, self.device_active)
@@ -447,31 +485,43 @@ impl Castty {
                     ),
             ]
             .align_y(iced::Alignment::Center)
-            .spacing(10.0),
+            .spacing(2.0 * widgets::UNIT),
         )
-        .id("tab-bar")
-        .padding([12.0, widgets::GAP])
-        .into()
+        .height(Length::Fixed(TAB_BAR_HEIGHT))
+        .align_y(iced::Alignment::Center)
+        .padding([0.0, widgets::PAGE_PAD])
+        .style(move |_t| style.chrome());
+        container(column![bar, widgets::hairline(palette)]).id("tab-bar").into()
     }
 
     fn hero(&self, palette: &Palette) -> Element<'_, Message> {
         let seconds = self.started.elapsed().as_secs_f32();
         let (wheel, logo) = self.lighting.lit(seconds);
         let style = *palette;
-        container(
-            iced::widget::canvas(preview::Preview {
-                art: self.art.clone(),
-                wheel,
-                logo,
-                show_buttons: self.page == Page::Buttons,
-                palette: *palette,
-            })
-            .width(Length::Fill)
-            .height(Length::Fill),
-        )
-        .id("hero")
-        .style(move |_t| style.stage())
-        .into()
+        let mouse = iced::widget::canvas(preview::Preview {
+            art: self.art.clone(),
+            wheel,
+            logo,
+        })
+        .width(Length::Fill)
+        .height(Length::Fill);
+        let mut stage = iced::widget::stack![mouse];
+        if self.page == Page::Buttons {
+            // A clipping container starts a new render layer, which is what
+            // puts the badges above the body image; see `preview.rs`.
+            stage = stage.push(
+                container(
+                    iced::widget::canvas(preview::Callouts { palette: *palette })
+                        .width(Length::Fill)
+                        .height(Length::Fill),
+                )
+                .clip(true),
+            );
+        }
+        container(stage)
+            .id("hero")
+            .style(move |_t| style.stage())
+            .into()
     }
 
     fn view(&self) -> Element<'_, Message> {
@@ -503,37 +553,58 @@ impl Castty {
             }
         };
 
+        let header = column![
+            text(self.page.label()).size(widgets::size::TITLE),
+            widgets::caption(&palette, self.page.blurb()),
+        ]
+        .spacing(widgets::UNIT);
+
         // Only the page content scrolls. A vertical `scrollable` hands its
         // child unbounded height, so anything inside it sized `Length::Fill`
-        // resolves against infinity and collapses to zero -- which is how
-        // the Large-hero pages once rendered nothing at all. The hero and
-        // the outer column stay outside it, so their `Fill` resolves against
-        // the window.
-        let content = scrollable(container(content).id("page-content").width(Length::Fill))
-            .height(Length::Fill);
-        let body: Element<'_, Message> = match self.page.hero() {
-            Hero::Large => row![
-                container(self.hero(&palette)).width(Length::FillPortion(5)).height(Length::Fill),
-                container(content).width(Length::FillPortion(5)),
-            ]
-            .spacing(widgets::GAP)
-            .height(Length::Fill)
-            .into(),
-            Hero::Small => column![
-                container(self.hero(&palette))
-                    .width(Length::Fill)
-                    .height(Length::Fixed(150.0)),
-                content,
-            ]
-            .spacing(widgets::GAP)
-            .height(Length::Fill)
-            .into(),
-            Hero::None => content.into(),
+        // resolves against infinity and collapses to zero: that is how the
+        // Large-hero pages once rendered nothing at all. The hero and the
+        // outer column stay outside it, so their `Fill` resolves against the
+        // window. The content column is capped at `MEASURE` so label/control
+        // pairs stay together on a wide window.
+        let content = container(column![header, content].spacing(widgets::STACK))
+            .id("page-content")
+            .width(Length::Fill)
+            .max_width(widgets::MEASURE)
+            // Room for the scrollbar, so it never sits on the cards.
+            .padding(iced::Padding::ZERO.right(3.0 * widgets::UNIT));
+
+        // Hero on the left at both sizes, so the mouse never jumps across the
+        // window between pages; it only grows or shrinks. The composition is
+        // capped and centred, so on a wide window it does not hug one edge.
+        // Any centring happens inside the scrollable: a scrollable takes the
+        // full width it is offered, so centring it from outside does nothing.
+        let hero = self.page.hero();
+        let body: Element<'_, Message> = match hero.width() {
+            Some(width) => {
+                let stage = match hero {
+                    Hero::Large => container(self.hero(&palette)).height(Length::Fill),
+                    _ => container(self.hero(&palette)).height(Length::Fixed(Hero::SMALL_HEIGHT)),
+                }
+                .width(Length::Fixed(width));
+                container(
+                    row![stage, scrollable(content).height(Length::Fill)]
+                        .spacing(widgets::STACK)
+                        .height(Length::Fill),
+                )
+                .max_width(width + widgets::STACK + widgets::MEASURE)
+                .center_x(Length::Fill)
+                .into()
+            }
+            None => scrollable(container(content).center_x(Length::Fill))
+                .height(Length::Fill)
+                .into(),
         };
 
         column![
             self.tab_bar(&palette),
-            container(body).padding(widgets::GAP).height(Length::Fill),
+            container(body)
+                .padding([widgets::PAGE_PAD, widgets::PAGE_PAD])
+                .height(Length::Fill),
             self.footer(&palette),
         ]
         .height(Length::Fill)
@@ -541,15 +612,14 @@ impl Castty {
     }
 
     fn footer(&self, palette: &Palette) -> Element<'_, Message> {
-        let dim = palette.dim;
-        container(
-            text(&self.status)
-                .size(12.0)
-                .style(move |_t| text::Style { color: Some(dim) }),
-        )
-        .id("footer")
-        .padding([8.0, widgets::GAP])
-        .into()
+        let style = *palette;
+        let line = container(widgets::caption(palette, self.status.as_str()))
+            .height(Length::Fixed(FOOTER_HEIGHT))
+            .align_y(iced::Alignment::Center)
+            .padding([0.0, widgets::PAGE_PAD])
+            .width(Length::Fill)
+            .style(move |_t| style.chrome());
+        container(column![widgets::hairline(palette), line]).id("footer").into()
     }
 }
 

@@ -70,10 +70,14 @@ src/iced_ui/
                     keyboard subscription, worker wiring
   theme.rs          Named themes, Accent overrides, Palette, resolve()
   settings.rs       persisted { theme, accent }
-  widgets.rs        card, field, segmented, segment, primary, subtle,
-                    destructive, dim, spacer, lighten, GAP, PAD
+  widgets.rs        spacing tokens (UNIT, GAP, STACK, PAD, PAGE_PAD, MEASURE),
+                    the type scale (size::*), card, field, heading, caption,
+                    muted, segmented, segment, primary, subtle, destructive,
+                    push_right, hairline, lighten
+  layout_tests.rs   headless layout assertions and page snapshots (T4/T5)
   art.rs            mouse artwork load + saturation-weighted LED tinting
-  preview.rs        the hero canvas — mouse, glow, button callouts
+  preview.rs        the hero: Preview (glow, mouse) and Callouts (badges),
+                    two canvases stacked in separate render layers
   colour_picker.rs  HSV canvas picker
   worker.rs         device thread, Job/Update messages, ProfileSink seam
   pages/
@@ -220,8 +224,10 @@ mouse after any change.
 
 ### Spacing and measure
 
-Current tokens are `GAP = 14.0` and `PAD = 18.0`. They are reasonable; the
-problem is that nothing constrains *measure*.
+Done in `widgets.rs`: `UNIT = 4`, with `GAP = 12` inside a card, `STACK = 16`
+between cards, `PAD = 20` card padding, `PAGE_PAD = 24` at the window edge,
+and `MEASURE = 720` as the content column's maximum width. The rest of this
+section is the reasoning it was built from.
 
 - Give the content column a **maximum width** (something like 680–760px) and
   centre it, so label/control pairs stay readable on a wide window.
@@ -501,26 +507,26 @@ judgement.
 
 ### Proportion and hierarchy — design work, needs judgement
 
-- [ ] **T6. Give the content column a maximum width** (roughly 680–760px) and
+- [x] **T6. Give the content column a maximum width** (roughly 680–760px) and
   centre it, so label/control pairs do not stretch across a wide window.
 
-- [ ] **T7. Re-specify the hero at both sizes.** `Hero::Small` is currently a
+- [x] **T7. Re-specify the hero at both sizes.** `Hero::Small` is currently a
   150px band (`mod.rs:512-518`) holding a very small mouse and a lot of empty
   space; the artwork's natural size is 320×392 (`art.rs`). Decide real
   measurements for the Large and Small states rather than leaving it to
   `FillPortion(5)` and a magic 150.
 
-- [ ] **T8. Define a type scale.** Sizes are currently chosen per call site
+- [x] **T8. Define a type scale.** Sizes are currently chosen per call site
   (`14.0`, `15.0`, `18.0`, `12.0`) with no system, which is why page titles,
   card titles and field labels read flat. Define the scale once and apply it.
 
-- [ ] **T9. Establish a spacing rhythm.** `GAP = 14.0` and `PAD = 18.0` are
+- [x] **T9. Establish a spacing rhythm.** `GAP = 14.0` and `PAD = 18.0` are
   fine as tokens, but card padding, inter-card gaps and label-to-control gaps
   should be multiples of one base unit rather than ad-hoc.
 
 ### Consistency cleanups
 
-- [ ] **T10. Make `card`'s subtitle match `field`'s hint.**
+- [x] **T10. Make `card`'s subtitle match `field`'s hint.**
   `widgets.rs:11-16` — `card` takes `subtitle: Option<&'a str>`, a concrete
   borrow that cannot accept `Some(&format!(...))`, while `field` takes
   `Option<impl Into<Cow<'a, str>>>`. The asymmetry has already forced two
@@ -528,6 +534,12 @@ judgement.
   because of it). Widen `card` to match.
 
 - [ ] **T11. Verify the button callout numbering against the physical mouse.**
+  Checked against the artwork only (`target/ui-snapshots/buttons-tiny-skia.png`):
+  1 and 2 sit on the main buttons, 3 on the wheel, 4 above 5 on the side, 6
+  on the button below the wheel. Whether 4 is really the *front* side button
+  as the device stores it still needs a hand on the mouse. Also fixed here:
+  the badges used to draw beneath the body image, because a render layer
+  draws all images above all paths; they now come from a second canvas.
   `preview.rs:15-25` (`BUTTON_MARKS`). This was wrong in the GTK version and
   is worth re-checking after any change to the hero, since nothing in the test
   suite can confirm it.

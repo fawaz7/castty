@@ -6,7 +6,7 @@
 //! linked. It is inferred from whether the axes match.
 
 use super::super::theme::Palette;
-use super::super::widgets::{self, GAP};
+use super::super::widgets::{self, size, GAP, STACK, UNIT};
 use crate::hardware::{DpiStep, PollingRate, Profile};
 use iced::widget::{button, column, pick_list, row, slider, text};
 use iced::{Element, Length};
@@ -145,10 +145,10 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             },
             Some("The DPI button cycles between these three"),
             row![
-                text(format!("{value}")).size(13.0),
+                text(format!("{value}")).size(size::LABEL),
                 slider(DPI_MIN..=DPI_MAX, value, move |v| Message::DpiChanged(i, v)).step(DPI_STEP),
             ]
-            .spacing(10.0)
+            .spacing(2.5 * UNIT)
             .align_y(iced::Alignment::Center)
             .width(Length::Fixed(260.0)),
         ));
@@ -159,10 +159,10 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 "    Y axis",
                 None::<&str>,
                 row![
-                    text(format!("{y}")).size(13.0),
+                    text(format!("{y}")).size(size::LABEL),
                     slider(DPI_MIN..=DPI_MAX, y, move |v| Message::DpiYChanged(i, v)).step(DPI_STEP),
                 ]
-                .spacing(10.0)
+                .spacing(2.5 * UNIT)
                 .align_y(iced::Alignment::Center)
                 .width(Length::Fixed(260.0)),
             ));
@@ -187,8 +187,8 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
 
     let sensor_card = widgets::card(
         palette,
-        "Sensor",
-        None,
+        "Tracking",
+        None::<&str>,
         column![
             widgets::field(
                 palette,
@@ -203,43 +203,44 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                             RATES.into_iter().find(|r| r.hz() == hz).unwrap_or(PollingRate::Hz1000),
                         )
                     },
-                ),
+                )
+                .text_size(size::BODY),
             ),
             widgets::field(
                 palette,
                 "Angle snapping",
                 Some("Straightens near-straight movement; 0 disables it"),
                 row![
-                    text(format!("{}", state.snapping)).size(13.0),
+                    text(format!("{}", state.snapping)).size(size::LABEL),
                     slider(0..=15u8, state.snapping, Message::SnappingChanged),
                 ]
-                .spacing(10.0)
+                .spacing(2.5 * UNIT)
                 .align_y(iced::Alignment::Center)
-                .width(Length::Fixed(220.0)),
+                .width(Length::Fixed(260.0)),
             ),
             widgets::field(
                 palette,
                 "Angle tuning",
                 Some("Rotates the sensor axis, in degrees"),
                 row![
-                    text(format!("{}", state.tuning)).size(13.0),
+                    text(format!("{}", state.tuning)).size(size::LABEL),
                     slider(-30..=30i32, state.tuning, Message::TuningChanged),
                 ]
-                .spacing(10.0)
+                .spacing(2.5 * UNIT)
                 .align_y(iced::Alignment::Center)
-                .width(Length::Fixed(220.0)),
+                .width(Length::Fixed(260.0)),
             ),
             widgets::field(
                 palette,
                 "Lift-off distance",
                 Some("How far the mouse can rise before it stops tracking"),
                 row![
-                    text(format!("{}", state.lift_off)).size(13.0),
+                    text(format!("{}", state.lift_off)).size(size::LABEL),
                     slider(1..=31u8, state.lift_off, Message::LiftOffChanged),
                 ]
-                .spacing(10.0)
+                .spacing(2.5 * UNIT)
                 .align_y(iced::Alignment::Center)
-                .width(Length::Fixed(220.0)),
+                .width(Length::Fixed(260.0)),
             ),
         ]
         .spacing(GAP),
@@ -273,14 +274,14 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             palette,
             "Surface quality",
             Some(reading),
-            button(text("Start").size(14.0))
-                .padding([8.0, 18.0])
+            button(text("Start").size(size::BODY))
+                .padding([2.0 * UNIT, 4.5 * UNIT])
                 .style(move |_t, status| widgets::subtle(&style, status))
                 .on_press_maybe((!state.measuring()).then_some(Message::AnalyzeStarted)),
         ),
     );
 
     column![dpi_card, sensor_card, surface_card]
-        .spacing(GAP)
+        .spacing(STACK)
         .into()
 }
