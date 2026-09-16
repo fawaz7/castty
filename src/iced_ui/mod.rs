@@ -99,12 +99,13 @@ pub struct Castty {
     /// a slot other than `current`, and Apply has to write all of them, not
     /// just whichever one the widgets on screen belong to.
     dirty: [bool; config::PROFILE_COUNT],
-    /// The slot the device was last told (successfully) to make active.
-    /// Selecting a different profile sets no dirty flag of its own, so
-    /// without this Apply would have nothing to notice a plain switch by --
-    /// the commit frame is the device's only profile-select mechanism, and
-    /// this is what tells Apply a commit is owed even with nothing to write.
-    device_active: usize,
+    /// The slot the device was last told (successfully) to make active, or
+    /// `None` before the first Apply this run. Selecting a different profile
+    /// sets no dirty flag of its own, so without this Apply would have
+    /// nothing to notice a plain switch by -- the commit frame is the
+    /// device's only profile-select mechanism, and this is what tells Apply
+    /// a commit is owed even with nothing to write.
+    device_active: Option<usize>,
     status: String,
     settings: Settings,
     worker: worker::Handle,
@@ -140,10 +141,15 @@ impl Castty {
                 library,
                 page: Page::Lighting,
                 dirty: [false; config::PROFILE_COUNT],
-                // There is no read path, so what the device is actually
-                // sitting on is unknown; slot 0 is the same starting
-                // assumption `current` makes.
-                device_active: 0,
+                // There is no read path, so which profile the device is
+                // actually sitting on is unknown at launch -- `None`, not a
+                // guessed slot, is the honest seed. It costs one commit the
+                // first time Apply runs (always enabled, always sent), which
+                // is the right trade against silently agreeing with a guess
+                // that might be wrong and leaving the mouse on some other
+                // profile with no way back short of a detour through
+                // selecting elsewhere and back.
+                device_active: None,
                 status: "Looking for the mouse\u{2026}".into(),
                 settings: Settings::load(),
                 worker,
@@ -314,7 +320,7 @@ impl Castty {
                             profiles,
                             active: self.current as u8,
                         });
-                    } else if self.current != self.device_active {
+                    } else if self.device_active != Some(self.current) {
                         // Selecting a profile sets no dirty flag of its own,
                         // so a switch with nothing else changed still has to
                         // reach the device -- the commit frame is the only
@@ -349,19 +355,20 @@ impl Castty {
                             *flag = false;
                         }
                     }
-                    self.device_active = active;
-                    self.status = if indices.is_empty() {
-                        // Not reachable through the UI today -- a
-                        // switch-only Apply goes through `Job::Switch`
-                        // instead -- but stay honest rather than claim a
-                        // save that did not happen.
-                        format!("Now using {}", self.profile_label(active))
-                    } else {
-                        "Saved to the mouse".into()
-                    };
+                    // An empty `indices` means `write_profiles`' own
+                    // empty-batch guard fired: no commit was issued, so
+                    // `device_active` must not move either, or this would
+                    // record a switch that never reached the device. Not
+                    // reachable through the UI today -- `WriteProfiles` is
+                    // only ever sent non-empty; a switch-only Apply goes
+                    // through `Job::Switch` instead.
+                    if !indices.is_empty() {
+                        self.device_active = Some(active);
+                        self.status = "Saved to the mouse".into();
+                    }
                 }
                 worker::Update::Switched(active) => {
-                    self.device_active = active;
+                    self.device_active = Some(active);
                     self.status = format!("Now using {}", self.profile_label(active));
                 }
                 worker::Update::SurfaceStarted => {
@@ -435,7 +442,7 @@ impl Castty {
                     .padding([9.0, 22.0])
                     .style(move |_t, status| widgets::primary(&style, status))
                     .on_press_maybe(
-                        (self.dirty.iter().any(|d| *d) || self.current != self.device_active)
+                        can_apply(&self.dirty, self.current, self.device_active)
                             .then_some(Message::Apply),
                     ),
             ]
@@ -531,6 +538,16 @@ impl Castty {
         .padding([8.0, widgets::GAP])
         .into()
     }
+}
+
+/// Whether Apply has anything to do: a dirty profile to write, or a
+/// selection that has not yet reached the device. `device_active` being
+/// `None` (nothing committed yet this run) must count as "differs", not
+/// "matches" -- otherwise the very first Apply after launch could be
+/// skipped, leaving the mouse on whatever profile it already happened to be
+/// sitting on, which this app has no way to read and confirm.
+fn can_apply(dirty: &[bool], current: usize, device_active: Option<usize>) -> bool {
+    dirty.iter().any(|d| *d) || device_active != Some(current)
 }
 
 // Free functions rather than methods or closures: `view` borrows from state, and
@@ -653,7 +670,7 @@ mod tests {
             library,
             page: Page::Lighting,
             dirty: [false; config::PROFILE_COUNT],
-            device_active: 0,
+            device_active: None,
             status: String::new(),
             settings: Settings::default(),
             worker: worker::Handle::for_test(tx),
@@ -702,12 +719,17 @@ mod tests {
         }
     }
 
-    /// With nothing edited and the selection unchanged, Apply has genuinely
-    /// nothing to do -- the button is disabled in that state, but the
-    /// handler itself must not send a job just because it was asked to.
+    /// With nothing edited and the selection already matching what was last
+    /// committed, Apply has genuinely nothing to do -- the button is
+    /// disabled in that state, but the handler itself must not send a job
+    /// just because it was asked to. `device_active` has to be `Some` here:
+    /// the freshly-seeded `None` from `test_app` counts as "differs" (see
+    /// the `can_apply` tests below), so this test sets it explicitly to
+    /// simulate a run where an Apply has already landed once.
     #[test]
     fn apply_with_nothing_to_do_sends_no_job() {
         let (mut app, jobs) = test_app();
+        app.device_active = Some(app.current);
 
         let _ = app.update(Message::Apply);
 
@@ -745,7 +767,7 @@ mod tests {
         assert!(!config::state_path(0).exists(), "only the handed indices are persisted");
         assert!(!app.dirty[1], "a confirmed write clears its own dirty flag");
         assert!(!app.dirty[3]);
-        assert_eq!(app.device_active, 2, "the committed slot, not whatever `current` is now");
+        assert_eq!(app.device_active, Some(2), "the committed slot, not whatever `current` is now");
 
         let _ = std::fs::remove_dir_all(&dir);
         // SAFETY: see above.
@@ -755,6 +777,20 @@ mod tests {
                 None => std::env::remove_var("XDG_CONFIG_HOME"),
             }
         }
+    }
+
+    /// `write_profiles`' empty-batch guard means an empty `Applied` reply
+    /// never actually reached a commit -- `device_active` recording a
+    /// switch that never happened would put it out of step with the real
+    /// device on the strength of a job that touched nothing.
+    #[test]
+    fn an_empty_applied_reply_leaves_device_active_unchanged() {
+        let (mut app, _jobs) = test_app();
+        app.device_active = Some(0);
+
+        let _ = app.update(Message::Device(worker::Update::Applied { indices: vec![], active: 4 }));
+
+        assert_eq!(app.device_active, Some(0));
     }
 
     /// A write that fails must not have already thrown away the chance to
@@ -856,7 +892,48 @@ mod tests {
 
         let _ = app.update(Message::Device(worker::Update::Switched(3)));
 
-        assert_eq!(app.device_active, 3);
+        assert_eq!(app.device_active, Some(3));
         assert!(!app.status.to_lowercase().contains("saved"));
+    }
+
+    // `can_apply` is the entire user-visible half of the switch-only-Apply
+    // work: it is what actually enables the button in `view()`, which
+    // nothing else here exercises. All four combinations of (nothing dirty
+    // / something dirty) x (selection matches device_active / differs),
+    // plus the `None`-seed case fix round 4 exists for.
+
+    #[test]
+    fn can_apply_is_false_when_nothing_dirty_and_selection_matches_device_active() {
+        let dirty = [false; config::PROFILE_COUNT];
+        assert!(!can_apply(&dirty, 1, Some(1)));
+    }
+
+    #[test]
+    fn can_apply_is_true_when_something_dirty_even_if_selection_matches_device_active() {
+        let mut dirty = [false; config::PROFILE_COUNT];
+        dirty[0] = true;
+        assert!(can_apply(&dirty, 1, Some(1)));
+    }
+
+    #[test]
+    fn can_apply_is_true_when_selection_differs_even_with_nothing_dirty() {
+        let dirty = [false; config::PROFILE_COUNT];
+        assert!(can_apply(&dirty, 2, Some(1)));
+    }
+
+    #[test]
+    fn can_apply_is_true_when_both_dirty_and_selection_differ() {
+        let mut dirty = [false; config::PROFILE_COUNT];
+        dirty[0] = true;
+        assert!(can_apply(&dirty, 2, Some(1)));
+    }
+
+    /// The `None` seed (nothing committed yet this run) must count as
+    /// "differs", not "matches" -- even when the untouched default
+    /// `current == 0` would look equal to a wrongly-chosen `Some(0)` seed.
+    #[test]
+    fn can_apply_is_true_with_nothing_dirty_when_device_active_is_still_unknown() {
+        let dirty = [false; config::PROFILE_COUNT];
+        assert!(can_apply(&dirty, 0, None));
     }
 }
