@@ -106,6 +106,9 @@ Three defects, all in layout. They were never caught because **tests assert
 state and reviews read diffs — neither can see that a page is blank.** Fixing
 the process gap matters as much as fixing the bugs; see §10.
 
+The actionable checklist with file/line references is §14; this section
+explains the causes behind it.
+
 ### 4.1 Lighting and Buttons render nothing at all
 
 Only the tab bar draws. The entire page body is empty.
@@ -422,3 +425,113 @@ the logic is correct.
    `resources/style.css`; point `src/main.rs` at `iced_ui::run`).
 
 Leave the hardware layer alone throughout.
+
+---
+
+## 14. TODO — the fix list
+
+Line numbers are against commit `463bdf0`. Everything in **Blocking** is a
+real defect with a known cause; everything below it is design work that needs
+judgement.
+
+### Blocking — the app is unusable until these are fixed
+
+- [ ] **T1. Lighting and Buttons render nothing.**
+  `src/iced_ui/mod.rs:505-511` — the `Hero::Large` arm builds
+  `row![...].height(Length::Fill)` with a hero container also at
+  `height(Length::Fill)`, and `mod.rs:525` wraps the whole body in
+  `scrollable(...)`. A vertical `scrollable` gives its child unbounded height,
+  so `Fill` collapses to zero.
+  **Fix direction:** wrap only the scrolling *content* in the `scrollable`,
+  not the whole body, and give the outer `column` at `mod.rs:523` an explicit
+  `height(Length::Fill)` so `Fill` resolves against the window instead of
+  against infinity. Bounding the hero with a fixed or minimum height also
+  works but is the weaker fix — it leaves the trap in place for the next
+  person.
+  **Verify:** open Lighting and Buttons; the hero and the controls both draw.
+
+- [ ] **T2. `spacer()` sets the wrong axis in the tab bar.**
+  `src/iced_ui/widgets.rs:146-148` returns `Space::new().height(Length::Fill)`.
+  `src/iced_ui/mod.rs:436` uses it inside a `row!`, where pushing items apart
+  needs `width(Length::Fill)`; setting height instead inflates the row to the
+  full window height and `align_y(Center)` centres the tabs in that box.
+  **Fix direction:** split it into two helpers — a horizontal pusher
+  (`width(Fill)`) and a vertical one (`height(Fill)`) — and give them names
+  that make the axis obvious. One ambiguous `spacer()` used on both axes is
+  the bug, so do not just flip the axis.
+  **Callers to update:** `mod.rs:436` is the only row use and needs the
+  horizontal one. The seven page uses are all trailing pushers in columns and
+  want the vertical one: `pages/lighting.rs:294`, `pages/sensor.rs:283`,
+  `pages/buttons.rs:209`, `pages/macros.rs:334` and `:396`,
+  `pages/profiles.rs:194`, `pages/about.rs:105`.
+  **Verify:** the tab bar is a normal-height strip, and the profile picker and
+  Apply sit at the right edge.
+
+- [ ] **T3. Check the trailing column spacers against T1's fix.**
+  Those seven `height(Fill)` spacers sit inside the same `scrollable` and are
+  subject to the identical rule. Once T1 changes what the scrollable wraps,
+  confirm each is still doing something useful — inside a scrollable, a
+  trailing Fill pusher has nothing to push against and should probably just go.
+
+### Layout net — do this before redesigning, so the redesign has a net under it
+
+- [ ] **T4. Headless layout assertions.** See §10. iced's `advanced` feature is
+  already enabled in `Cargo.toml`. Build each page's view, compute the layout
+  tree against fixed window bounds, and assert: every page's body has non-zero
+  width *and* height; the tab bar's height is under a sane bound; the profile
+  picker's x sits in the right-hand portion of the window. T1 and T2 are
+  exactly these three assertions.
+  First establish whether iced 0.14 exposes a null/headless renderer — if it
+  does not, the fallback is extracting layout decisions into pure functions
+  that return intended measurements, which is weaker but still catches a
+  collapse to zero.
+
+- [ ] **T5. Get a screenshot into the loop.** This machine has no `Xvfb`,
+  `xvfb-run`, `weston`, `sway`, `grim` or `xwininfo`, and ImageMagick's
+  `import` cannot reach the XWayland root, so automated capture was abandoned.
+  Either install a nested compositor plus a capture tool, or accept it as a
+  manual step — but if it stays manual it must actually be performed after
+  every layout change. "Cannot automate a GUI" is a reason to look by hand,
+  not to skip looking.
+
+### Proportion and hierarchy — design work, needs judgement
+
+- [ ] **T6. Give the content column a maximum width** (roughly 680–760px) and
+  centre it, so label/control pairs do not stretch across a wide window.
+
+- [ ] **T7. Re-specify the hero at both sizes.** `Hero::Small` is currently a
+  150px band (`mod.rs:512-518`) holding a very small mouse and a lot of empty
+  space; the artwork's natural size is 320×392 (`art.rs`). Decide real
+  measurements for the Large and Small states rather than leaving it to
+  `FillPortion(5)` and a magic 150.
+
+- [ ] **T8. Define a type scale.** Sizes are currently chosen per call site
+  (`14.0`, `15.0`, `18.0`, `12.0`) with no system, which is why page titles,
+  card titles and field labels read flat. Define the scale once and apply it.
+
+- [ ] **T9. Establish a spacing rhythm.** `GAP = 14.0` and `PAD = 18.0` are
+  fine as tokens, but card padding, inter-card gaps and label-to-control gaps
+  should be multiples of one base unit rather than ad-hoc.
+
+### Consistency cleanups
+
+- [ ] **T10. Make `card`'s subtitle match `field`'s hint.**
+  `widgets.rs:11-16` — `card` takes `subtitle: Option<&'a str>`, a concrete
+  borrow that cannot accept `Some(&format!(...))`, while `field` takes
+  `Option<impl Into<Cow<'a, str>>>`. The asymmetry has already forced two
+  workarounds (the Macros capacity readout was moved into the card body
+  because of it). Widen `card` to match.
+
+- [ ] **T11. Verify the button callout numbering against the physical mouse.**
+  `preview.rs:15-25` (`BUTTON_MARKS`). This was wrong in the GTK version and
+  is worth re-checking after any change to the hero, since nothing in the test
+  suite can confirm it.
+
+### Then, and only then
+
+- [ ] **T12. Drop the GTK front end.** Remove `src/ui/`, the `gtk4` and
+  `libadwaita` dependencies, and `resources/style.css` (GTK-only; nothing in
+  `src/iced_ui/` reads it). Point `src/main.rs` at `castty::iced_ui::run()`,
+  delete `examples/iced_shell.rs` and `examples/iced_smoke.rs`, and update the
+  README's requirements section. There is no point making a broken layout the
+  default binary, which is why this is last.
