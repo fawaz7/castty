@@ -6,7 +6,8 @@ use iced::widget::{button, column, row, text};
 use iced::Element;
 
 pub const AUTHOR: &str = "Fawaz Alghzawi";
-pub const GITHUB: &str = "https://github.com/fawaz7";
+pub const GITHUB: &str = "https://github.com/fawaz7/castty";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, Clone)]
 pub enum Message {
@@ -71,6 +72,8 @@ pub fn view<'a>(current: Named, accent: Accent, palette: &Palette) -> Element<'a
         row![
             widgets::muted(palette, "Built by", size::BODY),
             text(AUTHOR).size(size::BODY),
+            widgets::muted(palette, "·", size::BODY),
+            widgets::muted(palette, format!("v{VERSION}"), size::BODY),
         ]
         .spacing(1.5 * UNIT),
         button(text(GITHUB).size(size::LABEL))
@@ -84,7 +87,9 @@ pub fn view<'a>(current: Named, accent: Accent, palette: &Palette) -> Element<'a
             palette,
             "The Castor shipped without Linux software and without a published protocol. \
              This one was reverse engineered from captures of the Windows application and \
-             verified against the hardware. PROTOCOL.md in the repository documents all of it.",
+             verified against the hardware. Everything derived along the way -- the protocol, \
+             the raw captures and the capture rig -- is published in research/ for anyone to \
+             use. Free software under the GPL-3.0; the mouse artwork remains Mionix's.",
         ),
     ]
     .spacing(2.5 * UNIT);

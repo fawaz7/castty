@@ -37,11 +37,12 @@ fn parse_hex_colour(s: &str) -> Option<(u8, u8, u8)> {
     ))
 }
 
-fn usage() -> ExitCode {
-    eprintln!(
-        "castty -- Mionix Castor configuration
+fn usage(to_stdout: bool) -> ExitCode {
+    let text = format!(
+        "castty {} -- Mionix Castor configuration
 
 USAGE:
+    castty                      launch the graphical interface
     castty info                 show device identity
     castty -p <1-5> <command>   act on a profile other than the first
     castty led <RRGGBB>         set both LEDs to a colour
@@ -50,16 +51,39 @@ USAGE:
     castty dpi <1|2|3> <value>  set a DPI step
     castty surface [seconds]    run the surface analyzer (default 10s of movement)
     castty reset                restore factory defaults
+    castty help                 show this message
+    castty version              show the version
 
-Settings are stored in {} because the device has no read-back path.",
+Settings are stored in {} because the device has no read-back path.
+Every command other than help and version needs the mouse connected, and
+/dev/hidraw* access -- see packaging/60-mionix-castor.rules.",
+        env!("CARGO_PKG_VERSION"),
         config::state_path(0).display()
     );
-    ExitCode::from(2)
+    // Asking for help is not an error, so it goes to stdout and exits 0; being
+    // wrong about the command line is, so it goes to stderr and exits 2.
+    if to_stdout {
+        println!("{text}");
+        ExitCode::SUCCESS
+    } else {
+        eprintln!("{text}");
+        ExitCode::from(2)
+    }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().skip(1).collect();
     let index = profile_index(&args);
+
+    // Reject an unrecognised command before touching the hardware, so a typo
+    // answers with usage rather than with a device error -- the two are very
+    // different problems and the message has to say which one it is.
+    const COMMANDS: [&str; 6] = ["info", "led", "mode", "dpi", "surface", "reset"];
+    let command = args.first().map(String::as_str).unwrap_or("");
+    if !COMMANDS.contains(&command) {
+        return Err("unknown command".into());
+    }
+
     let dev = Device::open()?;
     let _ = &dev;
 
@@ -155,10 +179,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Commands answerable without touching the hardware. Dispatching these before
+/// `Device::open()` is what keeps `castty help` useful when the mouse is
+/// unplugged, or when the udev rule has not been installed yet.
+fn offline_command(arg: &str) -> Option<ExitCode> {
+    match arg {
+        "help" | "--help" | "-h" => Some(usage(true)),
+        "version" | "--version" | "-V" => {
+            println!("castty {}", env!("CARGO_PKG_VERSION"));
+            Some(ExitCode::SUCCESS)
+        }
+        _ => None,
+    }
+}
+
 fn main() -> ExitCode {
     // No arguments: launch the GUI. The CLI stays available for scripting and
     // for working on the hardware layer without a display.
-    if env::args().len() <= 1 {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
         return match castty::iced_ui::run() {
             Ok(()) => ExitCode::SUCCESS,
             Err(e) => {
@@ -167,12 +206,15 @@ fn main() -> ExitCode {
             }
         };
     }
+    if let Some(code) = args.iter().find_map(|a| offline_command(a)) {
+        return code;
+    }
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");
             if e.to_string() == "unknown command" {
-                return usage();
+                return usage(false);
             }
             ExitCode::FAILURE
         }

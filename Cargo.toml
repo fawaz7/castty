@@ -1,9 +1,23 @@
 [package]
 name = "castty"
-version = "0.1.0"
+version = "1.0.0"
 edition = "2021"
+rust-version = "1.88"
 license = "GPL-3.0"
 description = "Linux configuration tool for the Mionix Castor mouse"
+authors = ["Fawaz Alghzawi"]
+repository = "https://github.com/fawaz7/castty"
+homepage = "https://github.com/fawaz7/castty"
+readme = "README.md"
+keywords = ["mionix", "castor", "mouse", "hid", "rgb"]
+categories = ["hardware-support", "gui", "command-line-utilities"]
+# The session logs are the raw evidence behind PROTOCOL.md, not a build input,
+# and they dominate the repository by size. Keep them in git, out of the crate.
+exclude = [
+    "research/captures/sessions/*",
+    "docs/screenshots/*",
+    "target/ui-snapshots/*",
+]
 
 [dependencies]
 libc = "0.2"
