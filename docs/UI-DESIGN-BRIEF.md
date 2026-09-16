@@ -498,8 +498,10 @@ judgement.
 
 - [x] **T5. Get a screenshot into the loop.** `cargo test --lib layout_tests`
   writes a PNG of every page to `target/ui-snapshots/`, rendered headlessly
-  by the same simulator. Look at them after every layout change. Background
-  on why nothing else worked: this machine has no `Xvfb`,
+  by the same simulator. Look at them after every layout change. For the
+  real renderer, `tools/screenshot-gui.sh` runs the binary on XWayland and
+  grabs its window by id with ImageMagick, which does work even though the
+  XWayland root does not. Background on why nothing else worked: this machine has no `Xvfb`,
   `xvfb-run`, `weston`, `sway`, `grim` or `xwininfo`, and ImageMagick's
   `import` cannot reach the XWayland root, so automated capture was abandoned.
   Either install a nested compositor plus a capture tool, or accept it as a

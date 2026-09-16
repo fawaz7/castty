@@ -139,6 +139,7 @@ cargo test -- --nocapture      # show stdout
 cargo clippy --all-targets     # lint (currently clean)
 cargo run                      # launch the GUI
 cargo test --lib layout_tests  # headless layout checks; writes PNGs of every page to target/ui-snapshots/
+tools/screenshot-gui.sh        # real-renderer screenshot of the running GUI (via XWayland + ImageMagick)
 cargo run -- info              # identify the connected device (CLI mode)
 cargo build --release
 ```

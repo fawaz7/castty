@@ -56,6 +56,15 @@ impl Hero {
 const TAB_BAR_HEIGHT: f32 = 56.0;
 const FOOTER_HEIGHT: f32 = 32.0;
 
+/// Default window, and the smallest the window may be made. At the minimum
+/// the Large hero still leaves the Lighting page's one-line selector row
+/// enough room in Split mode; anything narrower would need a different
+/// layout rather than a squeezed one.
+pub const WINDOW_WIDTH: f32 = 1040.0;
+pub const WINDOW_HEIGHT: f32 = 700.0;
+pub const MIN_WINDOW_WIDTH: f32 = 960.0;
+pub const MIN_WINDOW_HEIGHT: f32 = 660.0;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Page {
     Lighting,
@@ -211,13 +220,20 @@ impl Castty {
         self.buttons.apply_to(&mut self.profiles[self.current], &self.library)
     }
 
-    /// What to call a slot in status text and the top-bar picker alike, so
-    /// the two cannot describe the same profile differently.
+    /// What to call a slot in status text, so it and the top-bar picker
+    /// cannot describe the same profile differently.
     fn profile_label(&self, index: usize) -> String {
         match self.profiles.get(index) {
             Some(p) if !p.name.trim().is_empty() => p.name.clone(),
             _ => format!("Profile {}", index + 1),
         }
+    }
+
+    /// The top-bar picker's entry for a slot. Numbered, because the picker
+    /// maps the chosen string back to an index and two profiles are allowed
+    /// to share a name; without the number the second could never be chosen.
+    fn picker_label(&self, index: usize) -> String {
+        format!("{}  {}", index + 1, self.profile_label(index))
     }
 
     fn update(&mut self, message: Message) -> Task<Message> {
@@ -262,8 +278,10 @@ impl Castty {
                 }
             }
             Message::Lighting(message) => {
+                if pages::lighting::State::edits_profile(&message) {
+                    self.dirty[self.current] = true;
+                }
                 self.lighting.update(message);
-                self.dirty[self.current] = true;
             }
             Message::Buttons(message) => {
                 self.buttons.update(message);
@@ -315,8 +333,10 @@ impl Castty {
                 }
             }
             Message::Sensor(message) => {
+                if pages::sensor::State::edits_profile(&message) {
+                    self.dirty[self.current] = true;
+                }
                 let wants_device = self.sensor.update(message);
-                self.dirty[self.current] = true;
                 if wants_device {
                     // Starting sends the start command; the end of the window
                     // asks for the result.
@@ -462,7 +482,7 @@ impl Castty {
         });
 
         let names: Vec<String> =
-            (0..self.profiles.len()).map(|i| self.profile_label(i)).collect();
+            (0..self.profiles.len()).map(|i| self.picker_label(i)).collect();
         let selected = names.get(self.current).cloned();
 
         let bar = container(
@@ -706,7 +726,11 @@ pub fn run() -> iced::Result {
         .title("Castty")
         .subscription(subscription)
         .theme(app_theme)
-        .window_size((1040.0, 700.0))
+        .window(iced::window::Settings {
+            size: iced::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
+            min_size: Some(iced::Size::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)),
+            ..iced::window::Settings::default()
+        })
         .run()
 }
 
@@ -1021,5 +1045,45 @@ mod tests {
     fn can_apply_is_true_with_nothing_dirty_when_device_active_is_still_unknown() {
         let dirty = [false; config::PROFILE_COUNT];
         assert!(can_apply(&dirty, 0, None));
+    }
+
+    /// Running the surface analyzer reads the mouse; it changes nothing
+    /// Apply would write. Its start, countdown ticks and result must not
+    /// mark the profile dirty, or a measurement costs a flash write.
+    #[test]
+    fn the_surface_analyzer_does_not_dirty_the_profile() {
+        let (mut app, _jobs) = test_app();
+        let _ = app.update(Message::Sensor(pages::sensor::Message::AnalyzeStarted));
+        let _ = app.update(Message::Sensor(pages::sensor::Message::Tick));
+        let _ = app.update(Message::Sensor(pages::sensor::Message::SurfaceResult(40)));
+        assert!(!app.dirty.iter().any(|d| *d), "a measurement is not an edit");
+
+        let _ = app.update(Message::Sensor(pages::sensor::Message::SnappingChanged(3)));
+        assert!(app.dirty[0], "sanity: a real edit still marks it");
+    }
+
+    /// Choosing which LED the picker edits in Split mode moves the picker
+    /// and nothing else.
+    #[test]
+    fn choosing_the_led_to_edit_does_not_dirty_the_profile() {
+        let (mut app, _jobs) = test_app();
+        let _ = app.update(Message::Lighting(pages::lighting::Message::TargetChanged(
+            pages::lighting::Target::Logo,
+        )));
+        assert!(!app.dirty[0]);
+    }
+
+    /// The top-bar picker turns the chosen string back into an index, so
+    /// two profiles with the same name must still get two distinct entries.
+    #[test]
+    fn picker_labels_stay_distinct_when_two_profiles_share_a_name() {
+        let (mut app, _jobs) = test_app();
+        pages::profiles::rename(&mut app.profiles, 1, "Work");
+        pages::profiles::rename(&mut app.profiles, 3, "Work");
+        let labels: Vec<String> = (0..config::PROFILE_COUNT).map(|i| app.picker_label(i)).collect();
+        let mut unique = labels.clone();
+        unique.dedup();
+        assert_eq!(labels.len(), unique.len(), "{labels:?}");
+        assert!(labels[3].contains("Work") && labels[3].starts_with('4'));
     }
 }

@@ -82,6 +82,17 @@ impl State {
 
     /// Returns true when the caller should talk to the device: either to start
     /// a measurement, or to read one whose window has just closed.
+    /// Whether a message changes something that Apply would write. The
+    /// surface analyzer's start, ticks and result do not: they read the
+    /// mouse, they do not configure it, and marking the profile dirty for
+    /// them would enable Apply and write flash for nothing.
+    pub fn edits_profile(message: &Message) -> bool {
+        !matches!(
+            message,
+            Message::AnalyzeStarted | Message::Tick | Message::SurfaceResult(_)
+        )
+    }
+
     pub fn update(&mut self, message: Message) -> bool {
         match message {
             Message::DpiChanged(i, value) => {
@@ -132,6 +143,16 @@ impl State {
     }
 }
 
+/// The number beside a slider, at a fixed width so the slider does not shift
+/// as the value gains or loses a digit.
+fn readout<'a>(value: String) -> Element<'a, Message> {
+    text(value)
+        .size(size::LABEL)
+        .width(Length::Fixed(11.0 * UNIT))
+        .align_x(iced::alignment::Horizontal::Right)
+        .into()
+}
+
 pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
     let mut steps = column![].spacing(GAP);
     for i in 0..3 {
@@ -145,7 +166,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
             },
             Some("The DPI button cycles between these three"),
             row![
-                text(format!("{value}")).size(size::LABEL),
+                readout(format!("{value}")),
                 slider(DPI_MIN..=DPI_MAX, value, move |v| Message::DpiChanged(i, v)).step(DPI_STEP),
             ]
             .spacing(2.5 * UNIT)
@@ -159,7 +180,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 "    Y axis",
                 None::<&str>,
                 row![
-                    text(format!("{y}")).size(size::LABEL),
+                    readout(format!("{y}")),
                     slider(DPI_MIN..=DPI_MAX, y, move |v| Message::DpiYChanged(i, v)).step(DPI_STEP),
                 ]
                 .spacing(2.5 * UNIT)
@@ -211,7 +232,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 "Angle snapping",
                 Some("Straightens near-straight movement; 0 disables it"),
                 row![
-                    text(format!("{}", state.snapping)).size(size::LABEL),
+                    readout(format!("{}", state.snapping)),
                     slider(0..=15u8, state.snapping, Message::SnappingChanged),
                 ]
                 .spacing(2.5 * UNIT)
@@ -223,7 +244,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 "Angle tuning",
                 Some("Rotates the sensor axis, in degrees"),
                 row![
-                    text(format!("{}", state.tuning)).size(size::LABEL),
+                    readout(format!("{}", state.tuning)),
                     slider(-30..=30i32, state.tuning, Message::TuningChanged),
                 ]
                 .spacing(2.5 * UNIT)
@@ -235,7 +256,7 @@ pub fn view<'a>(state: &'a State, palette: &Palette) -> Element<'a, Message> {
                 "Lift-off distance",
                 Some("How far the mouse can rise before it stops tracking"),
                 row![
-                    text(format!("{}", state.lift_off)).size(size::LABEL),
+                    readout(format!("{}", state.lift_off)),
                     slider(1..=31u8, state.lift_off, Message::LiftOffChanged),
                 ]
                 .spacing(2.5 * UNIT)

@@ -26,9 +26,13 @@ fn app_on(page: Page) -> Castty {
 }
 
 fn simulate(app: &Castty) -> Simulator<'_, Message> {
+    simulate_at(app, WIDTH, HEIGHT)
+}
+
+fn simulate_at(app: &Castty, width: f32, height: f32) -> Simulator<'_, Message> {
     Simulator::with_size(
         iced_test::core::Settings::default(),
-        iced::Size::new(WIDTH, HEIGHT),
+        iced::Size::new(width, height),
         app.view(),
     )
 }
@@ -60,6 +64,23 @@ fn every_page_lays_out_a_visible_content_area() {
             "{page:?} content is wider than the measure: {content:?}"
         );
     }
+}
+
+/// At the smallest window the app allows, the busiest single line (the
+/// Lighting selectors in Split mode, with the hex readout) must still fit
+/// beside the Large hero rather than run past the card.
+#[test]
+fn the_split_selector_row_fits_at_the_minimum_window_size() {
+    let mut app = app_on(Page::Lighting);
+    app.lighting.update(pages::lighting::Message::ModeChanged(pages::lighting::Mode::Split));
+    let mut ui = simulate_at(&app, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT);
+    let content = bounds_of(&mut ui, "page-content");
+    let hex = ui.find("#c9ff00").expect("the hex readout").bounds();
+    let logo = ui.find("Logo").expect("the LED selector").bounds();
+    assert!(
+        logo.x + logo.width < hex.x && hex.x + hex.width <= content.x + content.width,
+        "selector row overflows: logo {logo:?}, hex {hex:?}, content {content:?}"
+    );
 }
 
 /// With no hero, the content column is centred rather than left-aligned.

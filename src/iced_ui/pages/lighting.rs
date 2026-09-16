@@ -101,6 +101,12 @@ impl State {
         profile.set_mode(LedMode::new(self.effect, self.rainbow));
     }
 
+    /// Whether a message changes something that Apply would write. Choosing
+    /// which LED the picker edits in Split mode only moves the picker.
+    pub fn edits_profile(message: &Message) -> bool {
+        !matches!(message, Message::TargetChanged(_))
+    }
+
     pub fn update(&mut self, message: Message) {
         match message {
             Message::ModeChanged(mode) => {
