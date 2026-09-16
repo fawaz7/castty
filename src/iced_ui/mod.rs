@@ -1,7 +1,7 @@
 //! The iced front end.
 //!
-//! Everything below `hardware`, `config` and `macros` is unchanged — those
-//! layers never depended on a toolkit.
+//! `hardware`, `config` and `macros` never depended on a toolkit; this layer
+//! only draws them and routes messages.
 
 pub mod art;
 pub mod colour_picker;

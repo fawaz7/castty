@@ -28,8 +28,10 @@ every field against real hardware.
 ## Requirements
 
 - Linux with `hidraw`
-- GTK 4.10+ and libadwaita 1.5+
-- Rust 1.75+
+- Rust 1.88+
+- A Wayland or X11 session. The window is drawn with [iced](https://iced.rs); it uses the GPU
+  through Vulkan or OpenGL when a driver is present and falls back to software rendering when not.
+  Nothing from the desktop theme is used, so it looks the same on every distribution.
 
 ## Install
 

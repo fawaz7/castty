@@ -11,9 +11,8 @@ libc = "0.2"
 # its own config -- so the named library lives in ours.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-gtk4 = { version = "0.9", features = ["v4_10"] }
-libadwaita = { version = "0.7", features = ["v1_5"] }
-# GTK removed glib's sync channel; this is how worker results reach the main loop
+# The device worker thread hands results back over this; iced turns the
+# receiver into a subscription.
 async-channel = "2"
 iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }

@@ -1,6 +1,6 @@
 //! Device I/O on a background thread, bridged to iced's event loop.
 //!
-//! Same reasoning as the GTK build: feature reports take tens of milliseconds
+//! The reasoning has not changed with the toolkit: feature reports take tens of milliseconds
 //! and the mouse can vanish mid-call, so nothing touches the device from the
 //! UI thread. Results arrive as a subscription.
 

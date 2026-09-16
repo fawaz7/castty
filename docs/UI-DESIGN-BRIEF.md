@@ -1,7 +1,9 @@
 # castty UI — design brief and redesign handoff
 
-**Status:** the iced UI is functionally complete and hardware-correct, but the
-layout is visibly broken. This document is the handoff for a redesign pass.
+**Status:** the iced UI is the shipped front end. The layout defects below
+are fixed and the redesign pass is done; T11 (checking callout numbering on
+the physical mouse) is the one open item. Kept as the record of the design
+and of the rules that were learned the hard way.
 
 **Audience:** whoever picks up the redesign next. Assume they know Rust and
 have not seen this codebase.
@@ -98,9 +100,9 @@ across a replug, including which profile is active.
 
 ### The old GTK front end
 
-`src/ui/` still exists and `cargo run` still launches it. Replacing it with the
-iced build is the last remaining task (drop `src/ui/`, the `gtk4` and
-`libadwaita` deps, and `resources/style.css`, which is GTK-only).
+Removed. `cargo run` launches the iced build; `src/ui/`, the `gtk4` and
+`libadwaita` dependencies, `resources/style.css` and the two `examples/`
+shells are gone.
 
 ---
 
@@ -546,7 +548,7 @@ judgement.
 
 ### Then, and only then
 
-- [ ] **T12. Drop the GTK front end.** Remove `src/ui/`, the `gtk4` and
+- [x] **T12. Drop the GTK front end.** Remove `src/ui/`, the `gtk4` and
   `libadwaita` dependencies, and `resources/style.css` (GTK-only; nothing in
   `src/iced_ui/` reads it). Point `src/main.rs` at `castty::iced_ui::run()`,
   delete `examples/iced_shell.rs` and `examples/iced_smoke.rs`, and update the

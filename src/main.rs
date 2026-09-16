@@ -1,5 +1,5 @@
-//! Command-line front end. The GTK4 UI will sit alongside this; both drive the
-//! same `hardware` layer.
+//! Entry point. With no arguments it launches the iced GUI; with arguments it
+//! is a command-line tool. Both drive the same `hardware` layer.
 
 use castty::config;
 use castty::hardware::Device;
@@ -159,9 +159,12 @@ fn main() -> ExitCode {
     // No arguments: launch the GUI. The CLI stays available for scripting and
     // for working on the hardware layer without a display.
     if env::args().len() <= 1 {
-        return match castty::ui::run() {
-            code if code == gtk4::glib::ExitCode::SUCCESS => ExitCode::SUCCESS,
-            _ => ExitCode::FAILURE,
+        return match castty::iced_ui::run() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(e) => {
+                eprintln!("error: {e}");
+                ExitCode::FAILURE
+            }
         };
     }
     match run() {

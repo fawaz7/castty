@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-Goal: `castty`, a Linux GTK4/libadwaita application that configures the Mionix Castor mouse (LED colour,
+Goal: `castty`, a Linux desktop application (Rust, iced) that configures the Mionix Castor mouse (LED colour,
 DPI, polling rate, button mapping). No Linux tool for this device exists — not in OpenRGB, not elsewhere —
 so the protocol is being derived from scratch.
 
@@ -111,20 +111,22 @@ also has a hardware LED self-test: hold LMB + RMB + wheel while plugging in.
 
 ## Intended architecture
 
-Modeled deliberately on the `predator-sense` crate's layout — mirror its conventions when adding code.
-
 - Root crate `castty`, Rust 2021, GPL-3.0.
-- **gtk4 0.9** (feature `v4_10`) + **libadwaita 0.7** (feature `v1_5`).
-- `serde`/`serde_json` for config, `dirs` for paths.
-- **One page per file in `src/ui/`; one hardware surface per file in `src/hardware/`.** Keep the device
-  protocol entirely inside `src/hardware/` — the UI layer should never construct a raw report buffer.
-- Styling lives in `resources/style.css`, loaded as a GResource. No inline CSS in widget code.
+- **iced 0.14** (features `advanced`, `canvas`, `image`, `tokio`). The GTK4/libadwaita front end it
+  replaced is gone; `docs/UI-DESIGN-BRIEF.md` records the design and the layout rules that were
+  learned the hard way.
+- `serde`/`serde_json` for config.
+- **One page per file in `src/iced_ui/pages/`; one hardware surface per file in `src/hardware/`.** Keep
+  the device protocol entirely inside `src/hardware/` — the UI layer should never construct a raw report
+  buffer.
+- Colours come from `src/iced_ui/theme.rs` (the app's own palettes, never the desktop's); spacing tokens
+  and the type scale from `src/iced_ui/widgets.rs`. No literal sizes or colours in page code.
 - Release profile: `lto = "thin"`, `codegen-units = 1`, stripped.
 - **Keep `panic = "unwind"`.** This is intentional, not an oversight: hardware reads run on background
   threads, and a panic there must kill only that thread, not take down the window.
 
 Two structural consequences of the hardware that should shape the design from the start: all device I/O must
-be off the GTK main thread (feature reports on a 1 ms-interval device will stall the UI otherwise), and the
+be off the UI thread (feature reports on a 1 ms-interval device will stall the UI otherwise), and the
 device can be unplugged at any moment, so every hardware call returns a `Result` the UI has to render as a
 disconnected state rather than unwrap.
 
@@ -135,7 +137,8 @@ cargo test                     # all tests -- no hardware or display needed
 cargo test <name>              # single test by substring
 cargo test -- --nocapture      # show stdout
 cargo clippy --all-targets     # lint (currently clean)
-cargo run                      # launch the GTK4 GUI
+cargo run                      # launch the GUI
+cargo test --lib layout_tests  # headless layout checks; writes PNGs of every page to target/ui-snapshots/
 cargo run -- info              # identify the connected device (CLI mode)
 cargo build --release
 ```
@@ -146,21 +149,33 @@ for scripting and for working on the hardware layer without a display.
 
 ### UI layer
 
-- `src/ui/worker.rs` owns **all** device I/O on a named background thread. The GTK main loop never
+- `src/iced_ui/worker.rs` owns **all** device I/O on a named background thread. The UI thread never
   blocks on hardware: feature reports take tens of milliseconds and the mouse can disappear mid-call.
-  Jobs go in over an `mpsc` channel; results come back over an `async_channel` consumed by
-  `glib::spawn_future_local`. On any device error the worker drops its handle so the next job
-  reconnects — unplug/replug recovers on its own.
+  Jobs go in over an `mpsc` channel; results come back over an `async_channel` exposed as an iced
+  `Subscription`. On any device error the worker drops its handle so the next job reconnects —
+  unplug/replug recovers on its own.
 - Settings are applied on an explicit **Apply** press, never live as a colour is dragged. Writes go to
-  the mouse's flash, so a write per drag event would be wear for nothing.
-- One page per file in `src/ui/`. `led_page.rs` is the template to follow: a `PreferencesPage` with
-  `load(&Profile)` / `store(&mut Profile)` and a `connect_changed` hook the window uses to enable Apply.
-- Styling lives in `resources/style.css`, included with `include_str!` and installed as a display-wide
-  `CssProvider` at startup. No inline CSS in widget code.
-- The project targets the GTK **v4_10** feature baseline; prefer an older API over raising it
-  (`CssProvider::load_from_data`, not `load_from_string`).
+  the mouse's flash, so a write per drag event would be wear for nothing. Apply is enabled when any
+  profile is dirty or the selected profile differs from the one last committed to the device.
+- One page per file in `src/iced_ui/pages/`. `lighting.rs` is the template: a `State` with
+  `from_profile(&Profile)` / `apply_to(&mut Profile)` / `update(Message)`, and a free `view(&State,
+  &Palette)`. Pages do not reach into one another; `mod.rs` owns the profiles and routes messages.
+- **Never put `Length::Fill` on the vertical axis inside a vertical `scrollable`**; it resolves against
+  infinity and collapses to zero. Only page content is wrapped in the scrollable; the hero and chrome
+  sit outside it.
+- Within one render layer iced draws paths, then images, then text, whatever order they were issued.
+  Anything that must sit on top of the mouse artwork goes in a second canvas inside a clipping
+  container (`preview.rs::Callouts`).
+- `view`/`update`/`subscription`/`theme` are free `fn` items, not closures; `iced::Pixels` converts from
+  `f32`, not integers.
 
 ### Testing without hardware
+
+`src/iced_ui/layout_tests.rs` builds every page's real `view()` in `iced_test`'s headless simulator
+(tiny-skia, pinned in `.cargo/config.toml`), asserts layout invariants (content has real size, the hero
+measures what its size says, the tab bar is a fixed strip, Lighting fits the default window) and writes a
+PNG of every page and several states to `target/ui-snapshots/`. **Look at those PNGs after any layout
+change**; a green suite proves the logic, not the picture.
 
 `tests/profile.rs` runs entirely against the captured blobs in `captures/`. The important one is
 `recolouring_reproduces_the_captured_transition`: it takes the frame the vendor app sent for red,
