@@ -223,16 +223,158 @@ fn switching_to_hold_clears_the_recording() {
     assert_eq!(state.draft_events(), 0, "a timed recording is not a hold recording");
 }
 
-/// A macro with no name or no events cannot be referred to or played back.
+/// The same invariant holds crossing back out of hold mode.
 #[test]
-fn saving_requires_a_name_and_events() {
+fn switching_from_hold_clears_the_recording() {
     let mut library = Library::default();
     let mut state = macros_page::State::default();
 
     state.update(macros_page::Message::New, &mut library);
-    state.update(macros_page::Message::NameChanged(String::new()), &mut library);
+    state.update(macros_page::Message::TimingChanged(Timing::Hold), &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    assert_eq!(state.draft_events(), 1);
+
+    state.update(macros_page::Message::TimingChanged(Timing::Delay), &mut library);
+    assert_eq!(state.draft_events(), 0, "a hold recording is not a timed recording");
+}
+
+/// Hold mode records the press, not the release, and never a delay: the keys
+/// stay down for as long as the button does, which is not decided here.
+#[test]
+fn hold_recording_stores_only_presses_with_zero_delay() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::TimingChanged(Timing::Hold), &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, false), &mut library);
+    state.update(macros_page::Message::KeyPressed(0x05, true), &mut library);
+
+    let events = state.editing.as_ref().unwrap().events.clone();
+    assert_eq!(events.len(), 2, "the release must not be stored in hold mode");
+    assert!(events.iter().all(|e| e.pressed && e.delay_ms == 0));
+}
+
+/// The recorder ignores keys entirely outside a recording -- there is no
+/// reachable Stop to end one, so a stray keystroke must not join the draft.
+#[test]
+fn key_presses_are_ignored_when_not_recording() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+    assert_eq!(state.draft_events(), 0);
+}
+
+/// The first key of a recording has nothing to be delayed after.
+#[test]
+fn the_first_recorded_event_has_zero_delay() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
+
+    let events = state.editing.as_ref().unwrap().events.clone();
+    assert_eq!(events[0].delay_ms, 0);
+}
+
+/// A release with no matching press (a focused widget ate the press, but
+/// iced's `listen()` still surfaces the release) must not be recorded as an
+/// orphan "up" event.
+#[test]
+fn a_release_with_no_matching_press_is_not_recorded() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, false), &mut library);
+    assert_eq!(state.draft_events(), 0);
+}
+
+/// `Timing::None` promises every delay is zero; leaving `Delay` must zero the
+/// recorded gaps rather than either keeping them or discarding the recording.
+#[test]
+fn switching_to_no_timing_zeroes_recorded_delays_but_keeps_the_events() {
+    let mut library = Library::default();
+    let mut state = macros_page::State {
+        editing: Some(macros_page::Draft {
+            name: "Test".into(),
+            timing: Timing::Delay,
+            events: vec![
+                MacroEvent { key: 0x04, pressed: true, delay_ms: 0 },
+                MacroEvent { key: 0x04, pressed: false, delay_ms: 120 },
+            ],
+            original: None,
+            last: None,
+            ..Default::default()
+        }),
+        ..Default::default()
+    };
+
+    state.update(macros_page::Message::TimingChanged(Timing::None), &mut library);
+
+    let events = state.editing.as_ref().unwrap().events.clone();
+    assert_eq!(events.len(), 2, "the events must survive the switch");
+    assert!(events.iter().all(|e| e.delay_ms == 0));
+}
+
+/// A macro recorded but never named cannot be referred to or played back.
+#[test]
+fn saving_requires_a_name() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    state.update(macros_page::Message::NameChanged("   ".into()), &mut library);
+    state.update(macros_page::Message::RecordToggled, &mut library);
+    state.update(macros_page::Message::KeyPressed(0x04, true), &mut library);
     assert!(!state.update(macros_page::Message::Save, &mut library));
     assert!(library.macros.is_empty());
+}
+
+/// A named draft with nothing recorded has nothing to play back.
+#[test]
+fn saving_requires_events() {
+    let mut library = Library::default();
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::New, &mut library);
+    assert!(!state.update(macros_page::Message::Save, &mut library));
+    assert!(library.macros.is_empty());
+}
+
+/// Renaming onto a name already in the library must not destroy that other
+/// macro -- `Library::put` replaces by name, so the rename has to be rejected
+/// before it reaches `put`, not cleaned up after.
+#[test]
+fn renaming_onto_an_existing_name_is_rejected() {
+    let mut library = Library::default();
+    library.put(NamedMacro {
+        name: "One".into(),
+        timing: Timing::None,
+        events: vec![MacroEvent { key: 0x04, pressed: true, delay_ms: 0 }],
+    });
+    library.put(NamedMacro {
+        name: "Two".into(),
+        timing: Timing::None,
+        events: vec![MacroEvent { key: 0x05, pressed: true, delay_ms: 0 }],
+    });
+    let mut state = macros_page::State::default();
+
+    state.update(macros_page::Message::Edit("Two".into()), &mut library);
+    state.update(macros_page::Message::NameChanged("One".into()), &mut library);
+    assert!(!state.update(macros_page::Message::Save, &mut library));
+
+    let one = library.find("One").expect("the existing macro must survive");
+    assert_eq!(one.events, vec![MacroEvent { key: 0x04, pressed: true, delay_ms: 0 }]);
+    assert!(library.find("Two").is_some(), "the macro being edited must not be lost either");
 }
 
 /// Storage is shared across the profile: 32 slots, each macro costing its
@@ -245,7 +387,7 @@ fn capacity_counts_terminators() {
     macros[0] = Some(library.find("One").unwrap().to_device());
     profile.set_macros(&macros).unwrap();
 
-    let (used, total) = macros_page::slots_used(&library, &profile);
+    let (used, total) = macros_page::slots_used(&profile);
     assert_eq!(total, 32);
     assert_eq!(used, 2, "one event plus its terminator");
 }

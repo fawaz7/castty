@@ -6,14 +6,13 @@
 
 use super::super::theme::Palette;
 use super::super::widgets::{self, GAP};
+use crate::hardware::protocol::offset::MACRO_SLOTS;
 use crate::hardware::{keycode, MacroEvent, Profile};
 use crate::macros::{Library, NamedMacro, Timing};
 use iced::widget::{button, column, row, text, text_input};
 use iced::{Element, Length};
+use std::collections::HashSet;
 use std::time::Instant;
-
-/// Slots in the shared macro area; each macro costs its events plus one.
-const SLOTS: usize = 32;
 
 #[derive(Debug, Clone, Default)]
 pub struct Draft {
@@ -23,6 +22,22 @@ pub struct Draft {
     /// The name this draft is replacing, so a rename moves rather than copies.
     pub original: Option<String>,
     pub last: Option<Instant>,
+    /// Keys currently held down, by HID usage. A `KeyReleased` reaching us
+    /// with no matching entry here was never ours to record -- typically a
+    /// focused widget (the name field) consumed the press but iced's
+    /// `listen()` still surfaces the release -- so it must not be stored as
+    /// an orphan "up" event.
+    pub down: HashSet<u8>,
+}
+
+/// What changed in the library on the last update, beyond "it changed and
+/// needs saving" -- enough for a caller that also tracks button assignments
+/// by name to keep them in step without re-deriving everything from the
+/// profile.
+#[derive(Debug, Clone)]
+pub enum Change {
+    Renamed { from: String, to: String },
+    Deleted(String),
 }
 
 #[derive(Debug, Clone)]
@@ -43,6 +58,11 @@ pub enum Message {
 pub struct State {
     pub editing: Option<Draft>,
     pub recording: bool,
+    /// Set when Save is rejected, so the editor can say why.
+    pub error: Option<String>,
+    /// What the last update did to the library, for a caller that needs to
+    /// react to exactly that change. Consumed with `take()`.
+    pub last_change: Option<Change>,
 }
 
 impl State {
@@ -53,6 +73,8 @@ impl State {
 
     /// Returns true when the library changed and should be saved.
     pub fn update(&mut self, message: Message, library: &mut Library) -> bool {
+        self.error = None;
+        self.last_change = None;
         match message {
             Message::New => {
                 self.editing = Some(Draft {
@@ -70,12 +92,17 @@ impl State {
                         events: found.events.clone(),
                         original: Some(found.name.clone()),
                         last: None,
+                        down: HashSet::new(),
                     });
                 }
                 self.recording = false;
             }
             Message::Delete(name) => {
                 library.remove(&name);
+                // The macro stays on the device until its button is reassigned,
+                // so a button pointed at it must fall back to "keep", not lose
+                // its assignment silently.
+                self.last_change = Some(Change::Deleted(name));
                 return true;
             }
             Message::NameChanged(name) => {
@@ -89,6 +116,15 @@ impl State {
                     // valid in hold mode and vice versa.
                     if (draft.timing == Timing::Hold) != (timing == Timing::Hold) {
                         draft.events.clear();
+                    } else if draft.timing == Timing::Delay && timing != Timing::Delay {
+                        // `Timing::None` promises every delay is zero. Leaving
+                        // Delay must honour that instead of silently writing
+                        // the recorded gaps to a mode that claims not to have
+                        // any -- the events themselves are still a perfectly
+                        // good recording, so keep them.
+                        for event in &mut draft.events {
+                            event.delay_ms = 0;
+                        }
                     }
                     draft.timing = timing;
                 }
@@ -99,6 +135,7 @@ impl State {
                     if let Some(draft) = &mut self.editing {
                         draft.events.clear();
                         draft.last = None;
+                        draft.down.clear();
                     }
                 }
             }
@@ -106,22 +143,32 @@ impl State {
                 if !self.recording {
                     return false;
                 }
-                if let Some(draft) = &mut self.editing {
-                    // Hold macros store only the press; the key is released
-                    // when the mouse button is let go.
-                    if draft.timing == Timing::Hold && !pressed {
-                        return false;
-                    }
-                    let now = Instant::now();
-                    let delay = match draft.timing {
-                        Timing::Delay => draft
-                            .last
-                            .map_or(0, |t| now.duration_since(t).as_millis() as u32),
-                        _ => 0,
-                    };
-                    draft.last = Some(now);
-                    draft.events.push(MacroEvent { key, pressed, delay_ms: delay });
+                let Some(draft) = &mut self.editing else {
+                    return false;
+                };
+                if pressed {
+                    draft.down.insert(key);
+                } else if !draft.down.remove(&key) {
+                    // No press for this key was recorded -- most likely a
+                    // focused widget (the name field) ate the press but iced
+                    // still surfaces the release. Storing it would leave an
+                    // orphan "up" event with a real, meaningless delay.
+                    return false;
                 }
+                // Hold macros store only the press; the key is released
+                // when the mouse button is let go.
+                if draft.timing == Timing::Hold && !pressed {
+                    return false;
+                }
+                let now = Instant::now();
+                let delay = match draft.timing {
+                    Timing::Delay => draft
+                        .last
+                        .map_or(0, |t| now.duration_since(t).as_millis() as u32),
+                    _ => 0,
+                };
+                draft.last = Some(now);
+                draft.events.push(MacroEvent { key, pressed, delay_ms: delay });
             }
             Message::Save => {
                 let Some(draft) = self.editing.clone() else {
@@ -131,9 +178,18 @@ impl State {
                 if name.is_empty() || draft.events.is_empty() {
                     return false;
                 }
-                if let Some(old) = draft.original.as_deref() {
-                    if old != name {
+                let renamed = draft.original.as_deref() != Some(name.as_str());
+                // A rename (or a new macro) landing on a name already in the
+                // library would otherwise get silently overwritten by `put`
+                // below -- reject it instead of destroying that other macro.
+                if renamed && library.find(&name).is_some() {
+                    self.error = Some(format!("A macro named \"{name}\" already exists"));
+                    return false;
+                }
+                if renamed {
+                    if let Some(old) = draft.original.as_deref() {
                         library.remove(old);
+                        self.last_change = Some(Change::Renamed { from: old.to_string(), to: name.clone() });
                     }
                 }
                 library.put(NamedMacro { name, timing: draft.timing, events: draft.events });
@@ -151,14 +207,8 @@ impl State {
 }
 
 /// Slots used by the macros currently on this profile, and the total available.
-pub fn slots_used(_library: &Library, profile: &Profile) -> (usize, usize) {
-    let used: usize = profile
-        .macros()
-        .iter()
-        .flatten()
-        .map(|m| m.events.len() + 1)
-        .sum();
-    (used, SLOTS)
+pub fn slots_used(profile: &Profile) -> (usize, usize) {
+    (MACRO_SLOTS - profile.macro_slots_free(), MACRO_SLOTS)
 }
 
 fn summarise(entry: &NamedMacro) -> String {
@@ -190,7 +240,7 @@ pub fn view<'a>(
 ) -> Element<'a, Message> {
     let style = *palette;
     let dim = palette.dim;
-    let (used, total) = slots_used(library, profile);
+    let (used, total) = slots_used(profile);
 
     if let Some(draft) = &state.editing {
         let timing = widgets::segmented(
@@ -226,7 +276,7 @@ pub fn view<'a>(
             events = events.push(text(line).size(12.0));
         }
 
-        let editor = column![
+        let mut editor = column![
             widgets::field(
                 palette,
                 "Name",
@@ -236,31 +286,44 @@ pub fn view<'a>(
                     .width(Length::Fixed(220.0)),
             ),
             widgets::field(palette, "Timing", None::<&str>, timing),
-            row![
-                button(text(if state.recording { "Stop" } else { "Record" }).size(14.0))
-                    .padding([8.0, 18.0])
-                    .style(move |_t, status| widgets::subtle(&style, status))
-                    .on_press(Message::RecordToggled),
-                button(text("Save").size(14.0))
-                    .padding([8.0, 18.0])
-                    .style(move |_t, status| widgets::primary(&style, status))
-                    .on_press(Message::Save),
-                button(text("Cancel").size(14.0))
-                    .padding([8.0, 18.0])
-                    .style(move |_t, status| widgets::subtle(&style, status))
-                    .on_press(Message::Cancel),
-            ]
-            .spacing(8.0),
-            text(if state.recording {
-                "Recording: type the keys you want"
-            } else {
-                "Press Record, then type"
-            })
-            .size(12.0)
-            .style(move |_t| text::Style { color: Some(dim) }),
-            events,
         ]
         .spacing(GAP);
+
+        if let Some(error) = &state.error {
+            let danger = palette.danger;
+            editor = editor.push(
+                text(error.clone()).size(12.0).style(move |_t| text::Style { color: Some(danger) }),
+            );
+        }
+
+        let editor = editor
+            .push(
+                row![
+                    button(text(if state.recording { "Stop" } else { "Record" }).size(14.0))
+                        .padding([8.0, 18.0])
+                        .style(move |_t, status| widgets::subtle(&style, status))
+                        .on_press(Message::RecordToggled),
+                    button(text("Save").size(14.0))
+                        .padding([8.0, 18.0])
+                        .style(move |_t, status| widgets::primary(&style, status))
+                        .on_press(Message::Save),
+                    button(text("Cancel").size(14.0))
+                        .padding([8.0, 18.0])
+                        .style(move |_t, status| widgets::subtle(&style, status))
+                        .on_press(Message::Cancel),
+                ]
+                .spacing(8.0),
+            )
+            .push(
+                text(if state.recording {
+                    "Recording: type the keys you want"
+                } else {
+                    "Press Record, then type"
+                })
+                .size(12.0)
+                .style(move |_t| text::Style { color: Some(dim) }),
+            )
+            .push(events);
 
         return column![
             widgets::card(palette, "Edit macro", None, editor),
