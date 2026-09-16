@@ -142,7 +142,14 @@ impl Castty {
 
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::PageSelected(page) => self.page = page,
+            Message::PageSelected(page) => {
+                // The subscription that feeds the recorder stays live on
+                // every other page too; leaving Macros mid-recording must
+                // stop it, since there is no reachable Stop button once the
+                // page is gone.
+                self.macros.recording = false;
+                self.page = page;
+            }
             Message::ProfileSelected(index) => {
                 if index < self.profiles.len() {
                     self.current = index;
@@ -163,11 +170,30 @@ impl Castty {
             Message::Macros(message) => {
                 if self.macros.update(message, &mut self.library) {
                     let _ = self.library.save();
-                    // A deleted or renamed macro changes what a button row shows.
-                    self.buttons = pages::buttons::State::from_profile(
-                        &self.profiles[self.current],
-                        &self.library,
-                    );
+                    // Re-resolve only the slots the change actually touches,
+                    // rather than rebuilding from the profile: that would
+                    // discard button edits the user made but has not applied
+                    // yet, while `dirty` stayed true and the next Apply wrote
+                    // the reverted assignment to flash.
+                    match self.macros.last_change.take() {
+                        Some(pages::macros::Change::Renamed { from, to }) => {
+                            for slot in &mut self.buttons.slots {
+                                if *slot == pages::buttons::Slot::Library(from.clone()) {
+                                    *slot = pages::buttons::Slot::Library(to.clone());
+                                }
+                            }
+                        }
+                        Some(pages::macros::Change::Deleted(name)) => {
+                            // The macro stays on the device until the button is
+                            // reassigned, so this becomes "keep", not "none".
+                            for slot in &mut self.buttons.slots {
+                                if *slot == pages::buttons::Slot::Library(name.clone()) {
+                                    *slot = pages::buttons::Slot::Keep;
+                                }
+                            }
+                        }
+                        None => {}
+                    }
                 }
             }
             Message::Sensor(message) => {
