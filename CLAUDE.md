@@ -210,7 +210,7 @@ against real captured frames -- over synthesising expected bytes by hand.
   by default. Keep it in step with any VID/PID change.
 - `packaging/io.github.fawaz7.castty.desktop` and `packaging/icons/hicolor/` — desktop integration.
   The scalable SVG is the **only** hand-edited artwork; every PNG is generated from it by
-  `tools/generate-icons.sh`, and the 256px one is also embedded in the binary as the window icon.
+  `tools/generate-icons.sh`, and the 128px one is also embedded in the binary as the window icon.
   Edit the SVG and rerun the script; never touch a PNG directly. The application id
   (`iced_ui::APP_ID`), the desktop entry's basename, its `Icon` key and its `StartupWMClass` must all
   stay equal or the shell shows a placeholder icon for the running window; a test in
