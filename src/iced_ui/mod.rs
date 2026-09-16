@@ -60,6 +60,24 @@ const FOOTER_HEIGHT: f32 = 32.0;
 /// the Large hero still leaves the Lighting page's one-line selector row
 /// enough room in Split mode; anything narrower would need a different
 /// layout rather than a squeezed one.
+/// The application id. The shell pairs a running window with its installed
+/// desktop entry by this string, so it must stay equal to that file's
+/// basename or the window falls back to a placeholder icon. A test below
+/// checks the two against each other.
+pub const APP_ID: &str = "io.github.fawaz7.castty";
+
+/// The window icon, for shells that ask the window rather than reading the
+/// installed icon theme. This is the same file installed at 128x128, rather
+/// than a second copy: both it and every other size are generated from the
+/// scalable SVG by `tools/generate-icons.sh`.
+///
+/// On Wayland this is mostly moot. There is no window-icon protocol in
+/// general use, so the shell pairs the window to its desktop entry by
+/// `APP_ID` and draws whatever that entry's `Icon` key names. This embedded
+/// copy is what an X11 session and a bare window manager fall back on.
+const ICON_PNG: &[u8] =
+    include_bytes!("../../packaging/icons/hicolor/128x128/apps/io.github.fawaz7.castty.png");
+
 pub const WINDOW_WIDTH: f32 = 1040.0;
 pub const WINDOW_HEIGHT: f32 = 700.0;
 pub const MIN_WINDOW_WIDTH: f32 = 960.0;
@@ -721,6 +739,16 @@ fn app_theme(state: &Castty) -> iced::Theme {
     state.palette().iced_theme(state.settings.theme.label())
 }
 
+/// Decode the embedded icon. Returns `None` rather than panicking: a window
+/// with the wrong icon is a blemish, not a reason to refuse to start.
+fn window_icon() -> Option<iced::window::Icon> {
+    let image = image::load_from_memory_with_format(ICON_PNG, image::ImageFormat::Png)
+        .ok()?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    iced::window::icon::from_rgba(image.into_raw(), width, height).ok()
+}
+
 pub fn run() -> iced::Result {
     iced::application(Castty::new, update, view)
         .title("Castty")
@@ -729,6 +757,11 @@ pub fn run() -> iced::Result {
         .window(iced::window::Settings {
             size: iced::Size::new(WINDOW_WIDTH, WINDOW_HEIGHT),
             min_size: Some(iced::Size::new(MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT)),
+            icon: window_icon(),
+            platform_specific: iced::window::settings::PlatformSpecific {
+                application_id: APP_ID.to_owned(),
+                ..Default::default()
+            },
             ..iced::window::Settings::default()
         })
         .run()
@@ -1071,6 +1104,44 @@ mod tests {
             pages::lighting::Target::Logo,
         )));
         assert!(!app.dirty[0]);
+    }
+
+    /// The embedded icon must actually decode, or every window ships with a
+    /// placeholder. `window_icon` swallows the error by design, so nothing
+    /// at runtime would report a corrupt or mis-generated file.
+    #[test]
+    fn the_embedded_window_icon_decodes() {
+        let icon = window_icon().expect("the embedded PNG must decode as an icon");
+        let _ = icon;
+    }
+
+    /// The shell matches a window to its desktop entry by comparing the
+    /// window's application id to the entry's basename, and draws the icon
+    /// named by its `Icon` key. All three are written in different files, so
+    /// this checks they still agree.
+    #[test]
+    fn the_app_id_matches_the_installed_desktop_entry() {
+        let packaging = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("packaging");
+        let entry = packaging.join(format!("{APP_ID}.desktop"));
+        let text = std::fs::read_to_string(&entry)
+            .unwrap_or_else(|e| panic!("desktop entry named after APP_ID: {}: {e}", entry.display()));
+
+        assert!(
+            text.lines().any(|l| l == format!("Icon={APP_ID}")),
+            "the entry's Icon key must name the installed icon"
+        );
+        assert!(
+            text.lines().any(|l| l == format!("StartupWMClass={APP_ID}")),
+            "X11 pairs the window to the entry by StartupWMClass"
+        );
+        for size in [16, 24, 32, 48, 64, 128, 256, 512] {
+            let icon = packaging
+                .join(format!("icons/hicolor/{size}x{size}/apps/{APP_ID}.png"));
+            assert!(icon.exists(), "missing installed icon: {}", icon.display());
+        }
+        assert!(packaging
+            .join(format!("icons/hicolor/scalable/apps/{APP_ID}.svg"))
+            .exists());
     }
 
     /// The top-bar picker turns the chosen string back into an index, so

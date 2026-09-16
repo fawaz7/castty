@@ -208,6 +208,13 @@ against real captured frames -- over synthesising expected bytes by hand.
 
 - `packaging/60-mionix-castor.rules` — the udev rule users must install; `/dev/hidraw*` is root-only
   by default. Keep it in step with any VID/PID change.
+- `packaging/io.github.fawaz7.castty.desktop` and `packaging/icons/hicolor/` — desktop integration.
+  The scalable SVG is the **only** hand-edited artwork; every PNG is generated from it by
+  `tools/generate-icons.sh`, and the 256px one is also embedded in the binary as the window icon.
+  Edit the SVG and rerun the script; never touch a PNG directly. The application id
+  (`iced_ui::APP_ID`), the desktop entry's basename, its `Icon` key and its `StartupWMClass` must all
+  stay equal or the shell shows a placeholder icon for the running window; a test in
+  `src/iced_ui/mod.rs` checks this.
 - `captures/*.bin` — device frames used as test fixtures. Every protocol claim should be checkable
   against one of these.
 - `captures/*.log.gz` — raw capture sessions, gzipped (7.2 MB to 140 KB). `tools/decode_capture.py`

@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.5
+Name=castty
+GenericName=Mouse configuration
+Comment=Configure the Mionix Castor mouse
+Exec=castty
+Icon=io.github.fawaz7.castty
+Terminal=false
+Categories=Settings;HardwareSettings;
+Keywords=mouse;mionix;castor;dpi;led;lighting;macro;polling rate;
+StartupNotify=true
+StartupWMClass=io.github.fawaz7.castty

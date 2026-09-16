@@ -53,6 +53,21 @@ cargo build --release
 ./target/release/castty
 ```
 
+**3. Desktop entry.** Optional, and only needed to launch castty from your application menu
+rather than a terminal:
+
+```sh
+sudo install -Dm755 target/release/castty /usr/local/bin/castty
+sudo install -Dm644 packaging/io.github.fawaz7.castty.desktop \
+    /usr/share/applications/io.github.fawaz7.castty.desktop
+sudo cp -r packaging/icons/hicolor /usr/share/icons/
+sudo update-desktop-database /usr/share/applications
+sudo gtk-update-icon-cache -f /usr/share/icons/hicolor 2>/dev/null || true
+```
+
+The last two commands refresh the desktop and icon caches; both are safe to skip if the
+commands are missing on your system.
+
 ## Command line
 
 The GUI launches with no arguments. There is also a CLI, useful for scripting:
