@@ -14,11 +14,11 @@ pub const PROFILE_COUNT: usize = 5;
 /// Starting points when no local state exists, captured from the vendor app's
 /// own "reset to default" writing all five profiles.
 const FACTORY: [&[u8]; PROFILE_COUNT] = [
-    include_bytes!("../captures/factory-default-p0.bin"),
-    include_bytes!("../captures/factory-default-p1.bin"),
-    include_bytes!("../captures/factory-default-p2.bin"),
-    include_bytes!("../captures/factory-default-p3.bin"),
-    include_bytes!("../captures/factory-default-p4.bin"),
+    include_bytes!("../research/captures/factory-default-p0.bin"),
+    include_bytes!("../research/captures/factory-default-p1.bin"),
+    include_bytes!("../research/captures/factory-default-p2.bin"),
+    include_bytes!("../research/captures/factory-default-p3.bin"),
+    include_bytes!("../research/captures/factory-default-p4.bin"),
 ];
 
 fn config_dir() -> PathBuf {

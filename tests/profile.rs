@@ -5,7 +5,7 @@ use castty::hardware::{DpiStep, Effect, Led, LedMode, PollingRate, Profile};
 use std::fs;
 
 fn fixture(name: &str) -> Vec<u8> {
-    fs::read(format!("captures/{name}.bin"))
+    fs::read(format!("research/captures/{name}.bin"))
         .unwrap_or_else(|e| panic!("missing fixture {name}: {e}"))
 }
 

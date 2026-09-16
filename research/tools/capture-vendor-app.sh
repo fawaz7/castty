@@ -14,12 +14,27 @@
 #
 # The app renders small on a HiDPI display and there is no fix for that which
 # keeps it stable. Small but working beats large but hung.
+#
+# Usage:
+#   APP_DIR=~/CASTOR\ Software\ V1.44 research/tools/capture-vendor-app.sh
+#
+# The vendor software is not redistributed here; see ../README.md for where to
+# get it. Install ../../packaging/60-mionix-castor.rules first, or /dev/hidraw*
+# stays root-only and the app sees no device.
 set -u
+
+here=$(cd "$(dirname "$0")" && pwd)
 
 APP_DIR="${APP_DIR:?set APP_DIR to the directory containing 'CASTOR Software.exe'}"
 WORK="${WORK:-$(mktemp -d)}"
-SHIM="${SHIM:?set SHIM to the built hidsnoop.so}"
+SHIM="${SHIM:-$WORK/hidsnoop.so}"
 LOG="${LOG:-$WORK/capture.log}"
+
+# Build the ioctl shim unless one was supplied. It has no dependencies beyond
+# libdl, so this is cheaper than keeping a binary around.
+if [ ! -f "$SHIM" ]; then
+    cc -shared -fPIC -O2 -o "$SHIM" "$here/hidsnoop.c" -ldl || exit 1
+fi
 
 export WINEPREFIX="${WINEPREFIX:-$WORK/wp}"
 export DISPLAY="${DISPLAY:-:0}"
@@ -37,4 +52,4 @@ LD_PRELOAD="$SHIM" HIDSNOOP_LOG="$LOG" \
   setsid nohup wine "CASTOR Software.exe" >"$WORK/run.log" 2>&1 </dev/null &
 
 echo "capture log: $LOG"
-echo "change ONE setting per Apply in the GUI; decode with tools/decode_capture.py"
+echo "change ONE setting per Apply in the GUI; decode with research/tools/decode_capture.py"

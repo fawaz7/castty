@@ -5,7 +5,7 @@ Groups the capture into Apply bursts (each ends with a 0x60/0x04 commit) and
 diffs consecutive profile blobs, so each GUI change shows up as the exact set of
 bytes it moved.
 
-    python3 tools/decode_capture.py capture.log [--profile N]
+    python3 research/tools/decode_capture.py capture.log [--profile N]
 """
 import re, sys, collections
 

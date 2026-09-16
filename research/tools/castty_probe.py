@@ -2,8 +2,8 @@
 """Mionix Castor (22d4:1316) LED probe.
 
 Replays a captured vendor profile blob with the RGB bytes substituted, to verify the
-protocol against real hardware. Usage:  python3 tools/castty_probe.py RR GG BB
-This is a research tool -- the real implementation belongs in src/hardware/.
+protocol against real hardware. Usage:  python3 research/tools/castty_probe.py RR GG BB
+This is a research tool -- the real implementation lives in ../../src/hardware/.
 """
 import fcntl, os, glob, sys, time
 

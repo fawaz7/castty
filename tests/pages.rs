@@ -2,7 +2,7 @@ use castty::hardware::Profile;
 use std::fs;
 
 fn factory() -> Profile {
-    let raw = fs::read("captures/factory-default-p0.bin").expect("fixture");
+    let raw = fs::read("research/captures/factory-default-p0.bin").expect("fixture");
     Profile::decode(&raw).expect("decode")
 }
 

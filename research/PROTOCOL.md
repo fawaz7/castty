@@ -1,7 +1,13 @@
 # Mionix Castor (22d4:1316) — wire protocol
 
-Status: **in progress.** Everything below is observed from live capture of the vendor app
-(`CASTOR Software.exe` v1.44) running under Wine against real hardware, unless marked as a guess.
+Status: **complete for every setting the vendor software exposes.** Everything below is observed from
+live capture of the vendor app (`CASTOR Software.exe` v1.44) running under Wine against real hardware,
+then verified by writing the bytes back to the device, unless a row says otherwise. Confidence is
+marked per field; the handful of remaining unknowns are called out explicitly rather than glossed.
+
+Every claim here is checkable against a file in [`captures/`](captures/) — those are the actual frames
+the vendor application sent. `castty`'s test suite asserts against them, so a passing test is a frame
+the hardware has really accepted.
 
 ## Transport
 
@@ -10,7 +16,7 @@ Status: **in progress.** Everything below is observed from live capture of the v
   `/dev/hidrawN` index.
 - Two vendor feature reports (usage page `0xFF01`):
   - `0x60` — 63 data bytes (64 with report ID). Command/response.
-  - `0x61` — 1040 data bytes (1041 with ID). Bulk profile/macro blob. Not yet observed in traffic.
+  - `0x61` — 1040 data bytes (1041 with ID). Bulk profile/macro blob; this carries every setting.
 
 ## Command pattern (confirmed)
 
@@ -426,12 +432,12 @@ then once, globally:
 substituting `[39..41]` and `[43..45]`, and sending blob → terminator → commit changes the physical LED
 colour. Writing only the active profile (not all five) is sufficient.
 
-Reference implementation of the above: the probe script described in CLAUDE.md. Golden fixtures for the
+Reference implementation of the above: `tools/castty_probe.py` in this directory. Golden fixtures for the
 three captured colours are in `captures/` and should be used as regression inputs for the Rust decoder.
 
 ## Reproducing the capture
 
-See CLAUDE.md → "Capture rig". Two non-obvious prerequisites:
+See [`README.md`](README.md) in this directory for the capture rig. Two non-obvious prerequisites:
 
 1. udev rule tagging `22d4:1316` `uaccess` (`/dev/hidraw*` is `root:root 0600` by default).
 2. Wine hides the device otherwise: interface 1's descriptor leads with a **keyboard** collection
