@@ -85,6 +85,7 @@ pub enum Message {
     Sensor(pages::sensor::Message),
     Buttons(pages::buttons::Message),
     Macros(pages::macros::Message),
+    Profiles(pages::profiles::Message),
     About(pages::about::Message),
     Tick,
 }
@@ -103,6 +104,9 @@ pub struct Castty {
     sensor: pages::sensor::State,
     buttons: pages::buttons::State,
     macros: pages::macros::State,
+    /// Whether "Restore factory defaults" is armed, awaiting the second
+    /// click that actually overwrites the profiles.
+    confirm_restore: bool,
     started: Instant,
 }
 
@@ -121,6 +125,7 @@ impl Castty {
                 sensor,
                 buttons,
                 macros: pages::macros::State::default(),
+                confirm_restore: false,
                 art: Rc::new(art::Art::load()),
                 started: Instant::now(),
                 profiles,
@@ -148,6 +153,9 @@ impl Castty {
                 // stop it, since there is no reachable Stop button once the
                 // page is gone.
                 self.macros.recording = false;
+                // Leaving Profiles with the restore armed must not leave it
+                // primed for a stray click on return.
+                self.confirm_restore = false;
                 self.page = page;
             }
             Message::ProfileSelected(index) => {
@@ -179,6 +187,32 @@ impl Castty {
                         self.buttons.sync(&change);
                     }
                 }
+            }
+            Message::Profiles(pages::profiles::Message::NameChanged(index, name)) => {
+                pages::profiles::rename(&mut self.profiles, index, &name);
+                self.dirty = true;
+            }
+            Message::Profiles(pages::profiles::Message::Select(index)) => {
+                return self.update(Message::ProfileSelected(index));
+            }
+            Message::Profiles(pages::profiles::Message::RestoreRequested) => {
+                self.confirm_restore = true;
+            }
+            Message::Profiles(pages::profiles::Message::RestoreCancelled) => {
+                self.confirm_restore = false;
+            }
+            Message::Profiles(pages::profiles::Message::RestoreConfirmed) => {
+                self.confirm_restore = false;
+                for (i, profile) in self.profiles.iter_mut().enumerate() {
+                    *profile = config::factory_default(i);
+                }
+                self.lighting = pages::lighting::State::from_profile(&self.profiles[self.current]);
+                self.sensor = pages::sensor::State::from_profile(&self.profiles[self.current]);
+                self.buttons = pages::buttons::State::from_profile(
+                    &self.profiles[self.current],
+                    &self.library,
+                );
+                self.dirty = true;
             }
             Message::Sensor(message) => {
                 let wants_device = self.sensor.update(message);
@@ -356,11 +390,17 @@ impl Castty {
                 &palette,
             )
             .map(Message::Macros),
+            Page::Profiles => pages::profiles::view(
+                &self.profiles,
+                self.current,
+                self.confirm_restore,
+                &palette,
+            )
+            .map(Message::Profiles),
             Page::About => {
                 pages::about::view(self.settings.theme, self.settings.accent, &palette)
                     .map(Message::About)
             }
-            other => widgets::card(&palette, other.label(), Some("Coming next"), text("").size(1.0)),
         };
 
         let body: Element<'_, Message> = match self.page.hero() {

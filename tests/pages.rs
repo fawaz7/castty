@@ -493,3 +493,44 @@ fn capacity_counts_terminators() {
     assert_eq!(total, 32);
     assert_eq!(used, 2, "one event plus its terminator");
 }
+
+use castty::iced_ui::pages::profiles;
+
+/// The name field on the device is ten bytes of ASCII, not ten characters --
+/// a non-ASCII character truncated by `chars().take(10)` could still be more
+/// than ten bytes and get cut mid-encode.
+#[test]
+fn profile_names_are_capped_at_ten_bytes() {
+    let mut list = vec![factory(), factory()];
+    profiles::rename(&mut list, 0, "a very long name indeed");
+    assert_eq!(list[0].name.len(), 10);
+    assert_eq!(list[0].name, "a very lon");
+}
+
+/// Non-ASCII characters are dropped rather than counted toward the ten
+/// bytes, so what is shown in the field is exactly what the device stores.
+#[test]
+fn non_ascii_characters_are_dropped_from_the_name() {
+    let mut list = vec![factory()];
+    profiles::rename(&mut list, 0, "café \u{1F600} racer");
+    assert!(list[0].name.is_ascii());
+    assert_eq!(list[0].name.len(), 10);
+    assert_eq!(list[0].name, "caf  racer");
+}
+
+#[test]
+fn renaming_leaves_other_profiles_alone() {
+    let mut list = vec![factory(), factory()];
+    let before = list[1].name.clone();
+    profiles::rename(&mut list, 0, "Gaming");
+    assert_eq!(list[0].name, "Gaming");
+    assert_eq!(list[1].name, before);
+}
+
+/// An out-of-range index must be ignored rather than panicking.
+#[test]
+fn renaming_an_unknown_profile_is_ignored() {
+    let mut list = vec![factory()];
+    profiles::rename(&mut list, 9, "Nope");
+    assert_ne!(list[0].name, "Nope");
+}
