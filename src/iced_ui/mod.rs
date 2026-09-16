@@ -99,6 +99,12 @@ pub struct Castty {
     /// a slot other than `current`, and Apply has to write all of them, not
     /// just whichever one the widgets on screen belong to.
     dirty: [bool; config::PROFILE_COUNT],
+    /// The slot the device was last told (successfully) to make active.
+    /// Selecting a different profile sets no dirty flag of its own, so
+    /// without this Apply would have nothing to notice a plain switch by --
+    /// the commit frame is the device's only profile-select mechanism, and
+    /// this is what tells Apply a commit is owed even with nothing to write.
+    device_active: usize,
     status: String,
     settings: Settings,
     worker: worker::Handle,
@@ -134,6 +140,10 @@ impl Castty {
                 library,
                 page: Page::Lighting,
                 dirty: [false; config::PROFILE_COUNT],
+                // There is no read path, so what the device is actually
+                // sitting on is unknown; slot 0 is the same starting
+                // assumption `current` makes.
+                device_active: 0,
                 status: "Looking for the mouse\u{2026}".into(),
                 settings: Settings::load(),
                 worker,
@@ -158,6 +168,15 @@ impl Castty {
         self.buttons.apply_to(&mut self.profiles[self.current], &self.library)
     }
 
+    /// What to call a slot in status text and the top-bar picker alike, so
+    /// the two cannot describe the same profile differently.
+    fn profile_label(&self, index: usize) -> String {
+        match self.profiles.get(index) {
+            Some(p) if !p.name.trim().is_empty() => p.name.clone(),
+            _ => format!("Profile {}", index + 1),
+        }
+    }
+
     fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::PageSelected(page) => {
@@ -173,6 +192,10 @@ impl Castty {
             }
             Message::ProfileSelected(index) => {
                 if index < self.profiles.len() {
+                    // Selecting a profile is never the confirming click the
+                    // restore prompt is waiting for, whether or not the
+                    // switch itself goes on to succeed.
+                    self.profiles_page.disarm();
                     // Flush the outgoing profile's widgets into it before
                     // switching -- otherwise the edit vanishes the moment the
                     // widgets are rebuilt from the profile being switched to,
@@ -181,10 +204,6 @@ impl Castty {
                     match self.flush_current() {
                         Ok(()) => {
                             self.current = index;
-                            // Switching the active profile is not the
-                            // confirming click the restore prompt is
-                            // waiting for.
-                            self.profiles_page.disarm();
                             self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
                             self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
                             self.buttons = pages::buttons::State::from_profile(
@@ -290,10 +309,21 @@ impl Castty {
                     // that fails partway through a batch leaves the rest
                     // marked dirty and retryable instead of silently dropped.
                     let profiles = pages::profiles::dirty_profiles(&self.profiles, &self.dirty);
-                    self.worker.send(worker::Job::WriteProfiles {
-                        profiles,
-                        active: self.current as u8,
-                    });
+                    if !profiles.is_empty() {
+                        self.worker.send(worker::Job::WriteProfiles {
+                            profiles,
+                            active: self.current as u8,
+                        });
+                    } else if self.current != self.device_active {
+                        // Selecting a profile sets no dirty flag of its own,
+                        // so a switch with nothing else changed still has to
+                        // reach the device -- the commit frame is the only
+                        // way the mouse ever finds out which profile is live.
+                        self.worker.send(worker::Job::Switch { active: self.current as u8 });
+                    }
+                    // Otherwise there is nothing to do: Apply is disabled in
+                    // that case, so this arm exists only as a defensive
+                    // no-op rather than sending a meaningless job.
                 }
                 // The macro area is full; nothing is sent to the mouse, so
                 // the write is not silently reported as saved.
@@ -305,7 +335,7 @@ impl Castty {
                     self.status = format!("Connected, firmware {:x}.{:02x}", id.firmware >> 8, id.firmware & 0xff);
                 }
                 worker::Update::Disconnected(why) => self.status = why,
-                worker::Update::Applied(indices) => {
+                worker::Update::Applied { indices, active } => {
                     // Persist exactly the slots the worker actually wrote --
                     // not whichever profile happens to be `current` by the
                     // time this reply lands, which may have changed since
@@ -313,13 +343,26 @@ impl Castty {
                     // flags, so a write that failed partway through (a
                     // disconnect mid-Apply) leaves the rest of the batch
                     // dirty and retryable rather than silently dropped.
-                    for index in indices {
+                    for &index in &indices {
                         let _ = config::save(index, &self.profiles[index]);
                         if let Some(flag) = self.dirty.get_mut(index) {
                             *flag = false;
                         }
                     }
-                    self.status = "Saved to the mouse".into();
+                    self.device_active = active;
+                    self.status = if indices.is_empty() {
+                        // Not reachable through the UI today -- a
+                        // switch-only Apply goes through `Job::Switch`
+                        // instead -- but stay honest rather than claim a
+                        // save that did not happen.
+                        format!("Now using {}", self.profile_label(active))
+                    } else {
+                        "Saved to the mouse".into()
+                    };
+                }
+                worker::Update::Switched(active) => {
+                    self.device_active = active;
+                    self.status = format!("Now using {}", self.profile_label(active));
                 }
                 worker::Update::SurfaceStarted => {
                     self.status = "Measuring the surface\u{2026}".into();
@@ -374,18 +417,8 @@ impl Castty {
             )
         });
 
-        let names: Vec<String> = self
-            .profiles
-            .iter()
-            .enumerate()
-            .map(|(i, p)| {
-                if p.name.trim().is_empty() {
-                    format!("Profile {}", i + 1)
-                } else {
-                    p.name.clone()
-                }
-            })
-            .collect();
+        let names: Vec<String> =
+            (0..self.profiles.len()).map(|i| self.profile_label(i)).collect();
         let selected = names.get(self.current).cloned();
 
         container(
@@ -401,7 +434,10 @@ impl Castty {
                 button(text("Apply").size(14.0))
                     .padding([9.0, 22.0])
                     .style(move |_t, status| widgets::primary(&style, status))
-                    .on_press_maybe(self.dirty.iter().any(|d| *d).then_some(Message::Apply)),
+                    .on_press_maybe(
+                        (self.dirty.iter().any(|d| *d) || self.current != self.device_active)
+                            .then_some(Message::Apply),
+                    ),
             ]
             .align_y(iced::Alignment::Center)
             .spacing(10.0),
@@ -617,6 +653,7 @@ mod tests {
             library,
             page: Page::Lighting,
             dirty: [false; config::PROFILE_COUNT],
+            device_active: 0,
             status: String::new(),
             settings: Settings::default(),
             worker: worker::Handle::for_test(tx),
@@ -644,22 +681,37 @@ mod tests {
         assert_eq!(active, 2, "the mouse must end up switched to the current profile");
     }
 
-    /// The job's `active` always tracks `current`, even when nothing else is
-    /// dirty -- an empty write batch must still tell the worker which
-    /// profile to stay on.
+    /// Selecting a profile sets no dirty flag of its own, so with nothing
+    /// else edited Apply has nothing in `dirty` to notice -- but the commit
+    /// frame is the device's only profile-select mechanism, so the switch
+    /// still has to reach it. This must go out as `Job::Switch`, not a
+    /// `WriteProfiles` with an empty batch: the two look the same to the
+    /// UI's "is anything dirty" check, but only one of them is allowed to
+    /// touch the device with nothing to write.
     #[test]
-    fn apply_job_targets_the_current_profile_even_with_nothing_dirty() {
+    fn selecting_a_profile_with_nothing_else_dirty_sends_a_switch_only_job() {
         let (mut app, jobs) = test_app();
-        app.current = 4;
+        let _ = app.update(Message::ProfileSelected(4));
 
         let _ = app.update(Message::Apply);
 
-        let job = jobs.try_recv().expect("Apply must send a job");
-        let worker::Job::WriteProfiles { profiles, active } = job else {
-            panic!("expected WriteProfiles");
-        };
-        assert!(profiles.is_empty());
-        assert_eq!(active, 4);
+        let job = jobs.try_recv().expect("Apply must send a job when only the selection changed");
+        match job {
+            worker::Job::Switch { active } => assert_eq!(active, 4),
+            other => panic!("expected a switch-only job, not {other:?}"),
+        }
+    }
+
+    /// With nothing edited and the selection unchanged, Apply has genuinely
+    /// nothing to do -- the button is disabled in that state, but the
+    /// handler itself must not send a job just because it was asked to.
+    #[test]
+    fn apply_with_nothing_to_do_sends_no_job() {
+        let (mut app, jobs) = test_app();
+
+        let _ = app.update(Message::Apply);
+
+        assert!(jobs.try_recv().is_err(), "nothing changed, so nothing should be sent");
     }
 
     /// `Update::Applied` must persist exactly the indices it is handed, not
@@ -683,13 +735,17 @@ mod tests {
         app.dirty[1] = true;
         app.dirty[3] = true;
 
-        let _ = app.update(Message::Device(worker::Update::Applied(vec![1, 3])));
+        let _ = app.update(Message::Device(worker::Update::Applied {
+            indices: vec![1, 3],
+            active: 2,
+        }));
 
         assert!(config::state_path(1).exists());
         assert!(config::state_path(3).exists());
         assert!(!config::state_path(0).exists(), "only the handed indices are persisted");
         assert!(!app.dirty[1], "a confirmed write clears its own dirty flag");
         assert!(!app.dirty[3]);
+        assert_eq!(app.device_active, 2, "the committed slot, not whatever `current` is now");
 
         let _ = std::fs::remove_dir_all(&dir);
         // SAFETY: see above.
@@ -768,5 +824,39 @@ mod tests {
         let _ = app.update(Message::ProfileSelected(1));
 
         assert!(!app.profiles_page.confirming());
+    }
+
+    /// The disarm must not depend on the switch actually succeeding -- an
+    /// aborted switch (the macro-capacity error above) still has to clear a
+    /// pending restore, or the prompt is left armed by an action that looks
+    /// to the user like it did nothing.
+    #[test]
+    fn selecting_a_profile_disarms_a_pending_restore_even_when_the_switch_is_refused() {
+        let (mut app, _jobs) = test_app();
+        let events: Vec<MacroEvent> = (0..33)
+            .map(|i| MacroEvent { key: 0x04, pressed: i % 2 == 0, delay_ms: 0 })
+            .collect();
+        app.library.put(NamedMacro { name: "Huge".into(), timing: Timing::None, events });
+        app.buttons.slots[0] = pages::buttons::Slot::Library("Huge".into());
+        let _ = app.update(Message::Profiles(pages::profiles::Message::RestoreRequested));
+        assert!(app.profiles_page.confirming());
+
+        let _ = app.update(Message::ProfileSelected(1));
+
+        assert_eq!(app.current, 0, "sanity: the switch must indeed have been refused");
+        assert!(!app.profiles_page.confirming(), "a refused switch must still disarm");
+    }
+
+    /// `Update::Switched` is the reply to a switch-only Apply: nothing was
+    /// written, but the device now knows which profile is live, and the
+    /// status has to say so rather than claim a save that did not happen.
+    #[test]
+    fn update_switched_records_the_new_device_active_slot() {
+        let (mut app, _jobs) = test_app();
+
+        let _ = app.update(Message::Device(worker::Update::Switched(3)));
+
+        assert_eq!(app.device_active, 3);
+        assert!(!app.status.to_lowercase().contains("saved"));
     }
 }
