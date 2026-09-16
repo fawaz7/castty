@@ -6,6 +6,7 @@
 
 use super::super::theme::Palette;
 use super::super::widgets::{self, GAP};
+use crate::config;
 use crate::hardware::Profile;
 use iced::widget::{button, column, row, text, text_input};
 use iced::{Element, Length};
@@ -34,6 +35,78 @@ pub enum Message {
 pub fn rename(profiles: &mut [Profile], index: usize, name: &str) {
     if let Some(profile) = profiles.get_mut(index) {
         profile.name = name.chars().filter(char::is_ascii).take(NAME_MAX).collect();
+    }
+}
+
+/// Reset every profile to its factory default and mark all five dirty.
+///
+/// The mark matters as much as the reset: Apply only ever writes profiles
+/// flagged dirty, and a restore that touches all five in memory but leaves
+/// only the active one flagged would silently discard the other four on the
+/// next Apply -- which is exactly what the confirm dialog promises it will
+/// not do.
+pub fn restore_defaults(profiles: &mut [Profile], dirty: &mut [bool]) {
+    for (i, profile) in profiles.iter_mut().enumerate() {
+        *profile = config::factory_default(i);
+        if let Some(flag) = dirty.get_mut(i) {
+            *flag = true;
+        }
+    }
+}
+
+/// The profiles Apply should actually send: every one marked dirty, in slot
+/// order. Kept as a free function, rather than inlined where `Castty` builds
+/// the write job, so "Apply writes every dirty profile, not only the active
+/// one" is a claim a test can check without a live device.
+pub fn dirty_profiles(profiles: &[Profile], dirty: &[bool]) -> Vec<Profile> {
+    profiles
+        .iter()
+        .zip(dirty)
+        .filter(|(_, &d)| d)
+        .map(|(p, _)| p.clone())
+        .collect()
+}
+
+/// Local page state: just the restore confirmation, since names and the
+/// active slot live on the profiles themselves.
+#[derive(Debug, Clone, Default)]
+pub struct State {
+    /// Set by `RestoreRequested`; cleared by anything else -- including a
+    /// second look at the name field or the row picker -- so a stray click
+    /// elsewhere never leaves the destructive action armed.
+    confirming: bool,
+}
+
+impl State {
+    pub fn confirming(&self) -> bool {
+        self.confirming
+    }
+
+    /// Any message but `RestoreRequested` disarms; only `RestoreConfirmed`
+    /// while armed returns true, which is the caller's signal to actually
+    /// perform the restore.
+    pub fn update(&mut self, message: &Message) -> bool {
+        match message {
+            Message::RestoreRequested => {
+                self.confirming = true;
+                false
+            }
+            Message::RestoreConfirmed => {
+                let fire = self.confirming;
+                self.confirming = false;
+                fire
+            }
+            _ => {
+                self.confirming = false;
+                false
+            }
+        }
+    }
+
+    /// Disarm from outside a `Message::Profiles` -- switching the active
+    /// profile through the top-bar picker takes this path instead.
+    pub fn disarm(&mut self) {
+        self.confirming = false;
     }
 }
 

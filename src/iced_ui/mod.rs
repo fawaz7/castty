@@ -95,7 +95,10 @@ pub struct Castty {
     current: usize,
     library: Library,
     page: Page,
-    dirty: bool,
+    /// Per profile, not one flag for the lot: a rename or a restore can dirty
+    /// a slot other than `current`, and Apply has to write all of them, not
+    /// just whichever one the widgets on screen belong to.
+    dirty: [bool; config::PROFILE_COUNT],
     status: String,
     settings: Settings,
     worker: worker::Handle,
@@ -104,9 +107,7 @@ pub struct Castty {
     sensor: pages::sensor::State,
     buttons: pages::buttons::State,
     macros: pages::macros::State,
-    /// Whether "Restore factory defaults" is armed, awaiting the second
-    /// click that actually overwrites the profiles.
-    confirm_restore: bool,
+    profiles_page: pages::profiles::State,
     started: Instant,
 }
 
@@ -125,14 +126,14 @@ impl Castty {
                 sensor,
                 buttons,
                 macros: pages::macros::State::default(),
-                confirm_restore: false,
+                profiles_page: pages::profiles::State::default(),
                 art: Rc::new(art::Art::load()),
                 started: Instant::now(),
                 profiles,
                 current: 0,
                 library,
                 page: Page::Lighting,
-                dirty: false,
+                dirty: [false; config::PROFILE_COUNT],
                 status: "Looking for the mouse\u{2026}".into(),
                 settings: Settings::load(),
                 worker,
@@ -155,12 +156,15 @@ impl Castty {
                 self.macros.recording = false;
                 // Leaving Profiles with the restore armed must not leave it
                 // primed for a stray click on return.
-                self.confirm_restore = false;
+                self.profiles_page.disarm();
                 self.page = page;
             }
             Message::ProfileSelected(index) => {
                 if index < self.profiles.len() {
                     self.current = index;
+                    // Switching the active profile is not the confirming
+                    // click the restore prompt is waiting for.
+                    self.profiles_page.disarm();
                     self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
                     self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
                     self.buttons =
@@ -169,11 +173,11 @@ impl Castty {
             }
             Message::Lighting(message) => {
                 self.lighting.update(message);
-                self.dirty = true;
+                self.dirty[self.current] = true;
             }
             Message::Buttons(message) => {
                 self.buttons.update(message);
-                self.dirty = true;
+                self.dirty[self.current] = true;
             }
             Message::Macros(message) => {
                 if self.macros.update(message, &mut self.library) {
@@ -188,35 +192,41 @@ impl Castty {
                     }
                 }
             }
-            Message::Profiles(pages::profiles::Message::NameChanged(index, name)) => {
-                pages::profiles::rename(&mut self.profiles, index, &name);
-                self.dirty = true;
-            }
-            Message::Profiles(pages::profiles::Message::Select(index)) => {
-                return self.update(Message::ProfileSelected(index));
-            }
-            Message::Profiles(pages::profiles::Message::RestoreRequested) => {
-                self.confirm_restore = true;
-            }
-            Message::Profiles(pages::profiles::Message::RestoreCancelled) => {
-                self.confirm_restore = false;
-            }
-            Message::Profiles(pages::profiles::Message::RestoreConfirmed) => {
-                self.confirm_restore = false;
-                for (i, profile) in self.profiles.iter_mut().enumerate() {
-                    *profile = config::factory_default(i);
+            Message::Profiles(msg) => {
+                // Decides arm/disarm/fire; the page-specific effects below
+                // still need to run for `NameChanged` and `Select` regardless
+                // of what this returns.
+                let restore_now = self.profiles_page.update(&msg);
+                match msg {
+                    pages::profiles::Message::NameChanged(index, name) => {
+                        pages::profiles::rename(&mut self.profiles, index, &name);
+                        if index < self.profiles.len() {
+                            self.dirty[index] = true;
+                        }
+                    }
+                    pages::profiles::Message::Select(index) => {
+                        return self.update(Message::ProfileSelected(index));
+                    }
+                    pages::profiles::Message::RestoreRequested
+                    | pages::profiles::Message::RestoreCancelled => {}
+                    pages::profiles::Message::RestoreConfirmed => {
+                        if restore_now {
+                            pages::profiles::restore_defaults(&mut self.profiles, &mut self.dirty);
+                            self.lighting =
+                                pages::lighting::State::from_profile(&self.profiles[self.current]);
+                            self.sensor =
+                                pages::sensor::State::from_profile(&self.profiles[self.current]);
+                            self.buttons = pages::buttons::State::from_profile(
+                                &self.profiles[self.current],
+                                &self.library,
+                            );
+                        }
+                    }
                 }
-                self.lighting = pages::lighting::State::from_profile(&self.profiles[self.current]);
-                self.sensor = pages::sensor::State::from_profile(&self.profiles[self.current]);
-                self.buttons = pages::buttons::State::from_profile(
-                    &self.profiles[self.current],
-                    &self.library,
-                );
-                self.dirty = true;
             }
             Message::Sensor(message) => {
                 let wants_device = self.sensor.update(message);
-                self.dirty = true;
+                self.dirty[self.current] = true;
                 if wants_device {
                     // Starting sends the start command; the end of the window
                     // asks for the result.
@@ -247,9 +257,15 @@ impl Castty {
                 self.sensor.apply_to(&mut self.profiles[self.current]);
                 match self.buttons.apply_to(&mut self.profiles[self.current], &self.library) {
                     Ok(()) => {
-                        let profile = self.profiles[self.current].clone();
-                        self.worker.send(worker::Job::WriteProfile(Box::new(profile)));
-                        self.dirty = false;
+                        // Every dirty profile, not only the active one -- a
+                        // rename on a slot you are not editing, or a restore,
+                        // must not be silently dropped on the next Apply.
+                        let profiles = pages::profiles::dirty_profiles(&self.profiles, &self.dirty);
+                        self.worker.send(worker::Job::WriteProfiles {
+                            profiles,
+                            active: self.current as u8,
+                        });
+                        self.dirty = [false; config::PROFILE_COUNT];
                     }
                     // The macro area is full; nothing is sent to the mouse, so
                     // the write is not silently reported as saved.
@@ -262,8 +278,14 @@ impl Castty {
                     self.status = format!("Connected, firmware {:x}.{:02x}", id.firmware >> 8, id.firmware & 0xff);
                 }
                 worker::Update::Disconnected(why) => self.status = why,
-                worker::Update::Applied => {
-                    let _ = config::save(self.current, &self.profiles[self.current]);
+                worker::Update::Applied(indices) => {
+                    // Persist exactly the slots the worker actually wrote --
+                    // not whichever profile happens to be `current` by the
+                    // time this reply lands, which may have changed since
+                    // Apply was pressed.
+                    for index in indices {
+                        let _ = config::save(index, &self.profiles[index]);
+                    }
                     self.status = "Saved to the mouse".into();
                 }
                 worker::Update::SurfaceStarted => {
@@ -346,7 +368,7 @@ impl Castty {
                 button(text("Apply").size(14.0))
                     .padding([9.0, 22.0])
                     .style(move |_t, status| widgets::primary(&style, status))
-                    .on_press_maybe(self.dirty.then_some(Message::Apply)),
+                    .on_press_maybe(self.dirty.iter().any(|d| *d).then_some(Message::Apply)),
             ]
             .align_y(iced::Alignment::Center)
             .spacing(10.0),
@@ -393,7 +415,7 @@ impl Castty {
             Page::Profiles => pages::profiles::view(
                 &self.profiles,
                 self.current,
-                self.confirm_restore,
+                self.profiles_page.confirming(),
                 &palette,
             )
             .map(Message::Profiles),

@@ -4,7 +4,7 @@
 //! and the mouse can vanish mid-call, so nothing touches the device from the
 //! UI thread. Results arrive as a subscription.
 
-use crate::hardware::{Device, Identity, Profile};
+use crate::hardware::{Device, Error, Identity, Profile};
 use std::sync::mpsc;
 use std::sync::OnceLock;
 use std::thread;
@@ -12,7 +12,12 @@ use std::thread;
 #[derive(Debug)]
 pub enum Job {
     Connect,
-    WriteProfile(Box<Profile>),
+    /// Every profile that needs to reach flash, plus which one the mouse
+    /// should end up switched to. `Device::write_profile` commits to its own
+    /// index as it writes, so without an explicit final commit the mouse
+    /// would end up active on whichever profile happened to be written last
+    /// rather than the one the user has selected.
+    WriteProfiles { profiles: Vec<Profile>, active: u8 },
     SurfaceStart,
     SurfaceResult,
 }
@@ -21,7 +26,10 @@ pub enum Job {
 pub enum Update {
     Connected(Identity),
     Disconnected(String),
-    Applied,
+    /// Indices of the profiles actually written to the device, so the caller
+    /// persists exactly those to disk -- not whatever happens to be current
+    /// by the time this reply arrives.
+    Applied(Vec<usize>),
     /// The analyzer's measurement window has been armed on the mouse. Distinct
     /// from `Applied`: nothing was written to the device or the config file --
     /// the project only writes on an explicit Apply.
@@ -94,7 +102,7 @@ fn run(jobs: mpsc::Receiver<Job>, updates: async_channel::Sender<Update>) {
 
         let result = match job {
             Job::Connect => dev.identify().map(Update::Connected),
-            Job::WriteProfile(p) => dev.write_profile(&p).map(|()| Update::Applied),
+            Job::WriteProfiles { profiles, active } => write_profiles(dev, &profiles, active),
             Job::SurfaceStart => dev.surface_start().map(|()| Update::SurfaceStarted),
             Job::SurfaceResult => dev.surface_result().map(Update::Surface),
         };
@@ -111,4 +119,18 @@ fn run(jobs: mpsc::Receiver<Job>, updates: async_channel::Sender<Update>) {
             }
         }
     }
+}
+
+/// Write every profile in turn, then commit whichever one the user actually
+/// has selected. Each `write_profile` call ends in its own commit to its own
+/// index, so a plain loop over several profiles would leave the mouse
+/// switched to the last one written rather than the active one -- the
+/// explicit final `commit(active)` is what fixes that.
+fn write_profiles(dev: &Device, profiles: &[Profile], active: u8) -> Result<Update, Error> {
+    let indices: Vec<usize> = profiles.iter().map(|p| p.index as usize).collect();
+    for profile in profiles {
+        dev.write_profile(profile)?;
+    }
+    dev.commit(active)?;
+    Ok(Update::Applied(indices))
 }

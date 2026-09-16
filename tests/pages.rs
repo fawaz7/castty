@@ -534,3 +534,63 @@ fn renaming_an_unknown_profile_is_ignored() {
     profiles::rename(&mut list, 9, "Nope");
     assert_ne!(list[0].name, "Nope");
 }
+
+/// Apply must write every profile marked dirty, not only whichever one is
+/// currently on screen -- a rename on a slot you are not editing, or a
+/// restore, has to survive the next Apply.
+#[test]
+fn dirty_profiles_includes_every_marked_slot_not_just_the_active_one() {
+    let list = vec![factory(), factory(), factory()];
+    let dirty = [false, true, true];
+    let picked = profiles::dirty_profiles(&list, &dirty);
+    assert_eq!(picked.len(), 2);
+    assert_eq!(picked[0].index, list[1].index);
+    assert_eq!(picked[1].index, list[2].index);
+}
+
+#[test]
+fn dirty_profiles_is_empty_when_nothing_changed() {
+    let list = vec![factory()];
+    let dirty = [false];
+    assert!(profiles::dirty_profiles(&list, &dirty).is_empty());
+}
+
+/// A restore has to mark all five profiles dirty, or the fix above has
+/// nothing to work with -- the reset happens in memory, but Apply only ever
+/// writes what is flagged.
+#[test]
+fn restoring_defaults_marks_every_profile_dirty() {
+    let mut list = vec![factory(), factory(), factory()];
+    let mut dirty = [false, false, false];
+    profiles::restore_defaults(&mut list, &mut dirty);
+    assert!(dirty.iter().all(|&d| d));
+}
+
+/// Arming the restore and then cancelling must leave it disarmed without
+/// ever reporting that it should fire.
+#[test]
+fn arming_then_cancelling_the_restore_disarms_it() {
+    let mut state = profiles::State::default();
+    assert!(!state.update(&profiles::Message::RestoreRequested));
+    assert!(state.confirming());
+    assert!(!state.update(&profiles::Message::RestoreCancelled));
+    assert!(!state.confirming());
+}
+
+/// Arming and then confirming is the only path that reports the restore
+/// should actually happen.
+#[test]
+fn arming_then_confirming_the_restore_fires_once() {
+    let mut state = profiles::State::default();
+    state.update(&profiles::Message::RestoreRequested);
+    assert!(state.update(&profiles::Message::RestoreConfirmed));
+    assert!(!state.confirming(), "firing must also disarm it");
+}
+
+/// A confirm with no prior arming -- for example a leftover message after
+/// the page was left and re-entered -- must never fire.
+#[test]
+fn confirming_without_arming_does_not_fire() {
+    let mut state = profiles::State::default();
+    assert!(!state.update(&profiles::Message::RestoreConfirmed));
+}
