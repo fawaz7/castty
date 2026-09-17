@@ -1,6 +1,7 @@
 //! Local persistence of profile state.
 //!
-//! The device has no read path (see research/PROTOCOL.md), so the current configuration
+//! `castty` does not read the device's stored configuration (it can be read -- see the
+//! `0x07` command in research/PROTOCOL.md -- but this predates that), so the current configuration
 //! only exists here. Both the CLI and the GUI go through this module so they
 //! cannot drift apart.
 

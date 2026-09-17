@@ -208,9 +208,12 @@ against real captured frames -- over synthesising expected bytes by hand.
 
 ### Hardware notes
 
-- The device has **no read path** (see research/PROTOCOL.md). Current settings cannot be queried, so state is
-  persisted to `$XDG_CONFIG_HOME/castty/profile0.bin` and seeded from the factory-default blob, which
-  is embedded in the binary via `include_bytes!`.
+- **The device has a read path, but `castty` does not use it yet.** `0x60`/`0x07` with the profile
+  index in `[5]` returns that profile from flash on report `0x61` (see research/PROTOCOL.md); all
+  five were verified byte-exact. `castty` still persists state to
+  `$XDG_CONFIG_HOME/castty/profile0.bin`, seeded from the factory-default blob embedded via
+  `include_bytes!`, because it predates the discovery. Switching to reading the device is an open
+  improvement, not a bug -- but do not write new code that assumes settings cannot be queried.
 - `Profile` keeps the bytes it decoded from and patches only known fields on encode, so unknown
   regions -- including the unmapped 880-byte macro area -- survive a read/modify/write. Preserve this
   property when adding fields.

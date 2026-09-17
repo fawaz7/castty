@@ -14,13 +14,14 @@ report ID.
 
 | File | What it isolates |
 |---|---|
-| `factory-default-p0.bin` … `p4.bin` | The five profiles written by the vendor app's "reset to default". Embedded in `castty` as its starting state, since the device cannot be read back. |
+| `factory-default-p0.bin` … `p4.bin` | The five profiles written by the vendor app's "reset to default". Embedded in `castty` as its starting state. |
 | `profile1-red.bin`, `profile1-green.bin`, `profile1-blue.bin` | One profile, LED colour the only difference. The core regression fixture: recolour red → must equal green, byte for byte. |
 | `profile1-split-leds.bin` | Wheel and logo lit differently. Established which colour record drives which physical LED. |
 | `profile1-macros.bin` | A profile carrying recorded macros — located the macro area and its event encoding. |
 | `profile1-macro-timing.bin` | Macros with real millisecond deltas, distinguishing timed playback from hold mode. |
 | `profile2-buttons.bin` | Non-default button assignments across all six buttons. |
 | `profile2-renamed.bin` | A renamed profile — located the 10-byte ASCII name field. |
+| `read-0x07-profile0.bin` … `profile4.bin` | The five profiles **read back off the device** with `0x60`/`0x07`, not sent by the vendor app. Evidence for the read path: profiles 0 and 1 are byte-identical to what `castty` had written, profiles 2-4 to the factory defaults. Note the `00 01` response header where a write frame carries `61 08`. |
 
 ## Session logs (`sessions/*.log.gz`)
 

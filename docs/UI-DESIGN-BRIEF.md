@@ -35,7 +35,7 @@ has to be honest about them.
 
 | Fact | Consequence for the UI |
 |---|---|
-| **There is no read path.** The host cannot ask the mouse what it is currently set to. | Every value on screen is *what we last wrote*, not what the device holds. Never phrase anything as "current settings". State is persisted to `~/.config/castty/profileN.bin`. |
+| **The app does not read the mouse back.** A read path exists (`0x07`, see research/PROTOCOL.md) but the UI predates it and does not use it. | Every value on screen is *what we last wrote*, not what the device holds. Never phrase anything as "current settings". State is persisted to `~/.config/castty/profileN.bin`. Adopting the read path would remove this constraint. |
 | **Writes go to flash.** | No live-apply. Edits are local until an explicit **Apply**. A write per slider drag would wear the flash for nothing. |
 | **The commit frame is the only profile-select mechanism.** Byte 5 of a commit says which profile the mouse switches to. | Selecting a profile cannot take effect without a commit. Writing several profiles in a row ends on whichever was written last, so a multi-write must end with a commit for the slot the user actually selected. |
 | **Five profiles**, each with its own settings *and* its own macros. | The profile selector is global (top bar), not per-page. Switching profiles reloads every page's state. |
@@ -414,9 +414,10 @@ the logic is correct.
 - **`worker::write_profiles` ordering is verified by inspection**, not by a test
   against real hardware sequencing. There is now a `ProfileSink` trait seam and
   a recording fake covering call order, but no end-to-end hardware test exists.
-- **`device_active` is an assumption.** Since there is no read path, the app
+- **`device_active` is an assumption.** The app does not read the device, so it
   cannot know which profile the mouse is on at launch. It is seeded `None` so
-  the first Apply always commits.
+  the first Apply always commits. (The read path found later returns a profile's
+  contents but not which one is active, so this would still need care.)
 - The production seed in `Castty::new()` is not itself covered by a test; only
   the test double's copy of it is.
 

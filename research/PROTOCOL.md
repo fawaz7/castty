@@ -25,7 +25,8 @@ The channel is **request/response over the same report**, not a plain register r
 1. `HIDIOCSFEATURE` on report `0x60` — a 64-byte buffer, `[0]=0x60`, `[1]=<command>`, rest zero.
 2. `HIDIOCGFEATURE` on report `0x60` — 64 bytes back, `[0]=0x00`, `[1]=0x01` (ack/status), payload follows.
 
-A bare `GET` with no preceding `SET` returns all zeros — which is why probing the device cold looks dead.
+A bare `GET` with no preceding `SET` returns whichever response was latched last, and that survives
+re-opening the device; on a freshly powered device it is zeros, which is why probing cold looks dead.
 Both ioctls return 64; writes succeed.
 
 ## Commands observed
@@ -37,6 +38,7 @@ All verified against hardware. Command byte is `[1]`; report ID is `[0]`.
 | `0x60` | `0x02` | Identify | Returns firmware version + MCU string |
 | `0x60` | `0x03` | Status poll | Vendor app repeats every 2 s; returns zeros while idle |
 | `0x60` | `0x04` | **Commit** | Bare frame, payload all zero. Applies pending profile writes |
+| `0x60` | `0x07` | **Profile read** | `[5]` = profile index 0-4. Reply is read on report `0x61` |
 | `0x61` | `0x08` | Profile write | 1041-byte blob (below), or short terminator form |
 | `0x60` | `0x05` | **Surface analyzer** | `[2]`=1 start, `[2]`=2 read result |
 
@@ -346,15 +348,46 @@ effects -- would mean tens of flash writes per second against an endurance budge
 10,000 cycles, and would destroy the device in about an hour. Do not build it on this path. Custom
 lighting is limited to what the firmware implements unless a direct-control command is found.
 
-#### No read path
+#### The read path — `0x60` / `0x07`
 
-Across 1260 GET_FEATURE calls in two capture sessions, **the vendor app never reads a profile back**.
-It only ever reads identify (`0x02`) and the status poll (`0x03`). There is no known command that
-returns stored settings.
+**Every profile can be read back from flash.** An earlier version of this document stated the
+opposite. That was wrong, and the error is worth recording: it reasoned from the vendor
+application's behaviour rather than the firmware's. Across 1260 `GET_FEATURE` calls in two capture
+sessions the vendor app never reads a profile back — it only ever reads identify (`0x02`) and the
+status poll (`0x03`) — and that absence was taken as proof no such command existed. The firmware
+implements one anyway. No capture could ever have revealed it; only probing the command space could.
 
-Consequence for `castty`: the device cannot be queried for its current configuration, so the
-application must persist its own state and treat the factory-default blob as the starting point. This
-is what the vendor app does too.
+The command follows the same request/response pattern as the rest of the `0x60` channel, but the
+reply is read on report `0x61` because a profile does not fit in 64 bytes:
+
+1. `HIDIOCSFEATURE` on report `0x60` — `[0]=0x60`, `[1]=0x07`, `[5]`=profile index 0-4.
+2. `HIDIOCGFEATURE` on report `0x61` — 1041 bytes back.
+
+`[5]` is the profile index, the same slot the write frame and the commit frame use. An index written
+to `[2]`, `[3]`, `[4]`, `[7]` or `[16]` is ignored.
+
+The response uses the **same field layout as the write blob**, so every offset in the table above
+applies unchanged. Only the two-byte header differs: a response leads `00 01` where a write frame
+leads `61 08`.
+
+Verified against hardware:
+
+- All five profiles read back **byte-exactly**. Profiles 0 and 1 matched `castty`'s persisted blobs
+  and profiles 2-4 matched the factory-default captures, with zero differing bytes across the whole
+  payload `[16..1041)` in all five cases — including the 880-byte macro region.
+- The data is in **flash, not RAM**. After unplugging and replugging the mouse, the colours last
+  written were still returned. A RAM copy of the last write would not survive losing power.
+
+**Warm-up caveat.** For a short window after enumeration — still true about five seconds in — the
+device answers `0x07` with an all-zero buffer instead of refusing. Anything reading a profile must
+validate the response before trusting it: check the constant at `[34]` is `0x08`, the DPI step count
+at `[102]` is `0x03`, and the DPI values are in range. A consumer that patches a field into a
+zero-filled buffer and writes it back would erase the profile's DPI, buttons and macros.
+
+Consequence for `castty`: the application no longer *has* to persist its own state, and could read
+the device instead. It has not been changed to do so — the state file remains the source of truth
+for now — but the option now exists, and any new consumer of this protocol should prefer reading the
+device.
 
 #### Macros
 

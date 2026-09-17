@@ -1,7 +1,8 @@
 //! Profiles page: naming the five slots, choosing the active one, and
 //! restoring factory defaults.
 //!
-//! The device has no read path, so these are the settings we last wrote, not
+//! `castty` does not read the device back (though `0x07` can -- see research/PROTOCOL.md),
+//! so these are the settings we last wrote, not
 //! what the mouse currently holds.
 
 use super::super::theme::Palette;

@@ -205,7 +205,7 @@ impl Castty {
                 library,
                 page: Page::Lighting,
                 dirty: [false; config::PROFILE_COUNT],
-                // There is no read path, so which profile the device is
+                // We do not read the device back, so which profile it is
                 // actually sitting on is unknown at launch -- `None`, not a
                 // guessed slot, is the honest seed. It costs one commit the
                 // first time Apply runs (always enabled, always sent), which

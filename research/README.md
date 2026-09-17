@@ -28,15 +28,17 @@ The Castor speaks a plain HID feature-report protocol on **interface 1** (`22d4:
 
 | Report | Size | Role |
 |---|---|---|
-| `0x60` | 64 B | Commands: identify, status, commit, surface analyzer |
+| `0x60` | 64 B | Commands: identify, status, commit, profile read, surface analyzer |
 | `0x61` | 1041 B | The whole profile — name, LEDs, DPI, polling, buttons, macros |
 
 Configuring the mouse is: write the 1041-byte blob, write a short per-profile terminator, then send
 one `0x60`/`0x04` commit. [`PROTOCOL.md`](PROTOCOL.md) has every offset.
 
-There is **no read path.** Nothing the device answers returns its stored settings — the vendor
-software has the same limitation and keeps its own state file. Any tool built on this has to do the
-same.
+Reading works too: `0x60`/`0x07` with the profile index in `[5]` returns that profile on report
+`0x61`, byte-for-byte as stored in flash. The vendor software never issues it, which is why this
+document once claimed there was no read path at all — an absence in the captures was mistaken for an
+absence in the firmware. Probing the command space directly found it. Validate what comes back: for
+a few seconds after the mouse is plugged in, the command answers with zeros rather than refusing.
 
 ## How it was done
 
