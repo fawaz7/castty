@@ -15,6 +15,7 @@ __pycache__/
 # not something anyone reading the repository needs.
 /.superpowers/
 /.claude/
+/graphify-out/
 
 # Vendor binaries: redistributing Mionix's software is not ours to do.
 # Keep them locally for capture work; they are not part of the project.
