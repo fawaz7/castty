@@ -1,6 +1,6 @@
 # Maintainer: Fawaz Alghzawi <https://github.com/fawaz7>
 pkgname=castty
-pkgver=1.0.0
+pkgver=1.1.0
 pkgrel=1
 pkgdesc="Configure the Mionix Castor mouse on Linux -- lighting, DPI, buttons and macros"
 arch=('x86_64')

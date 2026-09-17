@@ -92,14 +92,18 @@ which tests, builds, and attaches a `.deb` and a portable tarball to a **draft**
 GitHub release:
 
 ```sh
-git tag -a v1.0.0 -m "castty 1.0.0"
-git push origin v1.0.0
+git tag -a v1.1.0 -m "castty 1.1.0"
+git push origin v1.1.0
 ```
 
 It stops at a draft on purpose — review the artifacts, then publish by hand.
 
-Bump `version` in `Cargo.toml` before tagging. The About page and `castty
-version` both read it from there, so that one edit is the whole version bump.
+Bump `version` in `Cargo.toml` before tagging — the About page and `castty
+version` both read it from there via `env!`, so the application needs no other
+edit. Three files outside the application carry it too and do not update
+themselves: `pkgver` in [`arch/PKGBUILD`](arch/PKGBUILD), and the `.deb` and
+tarball filenames in the README's install instructions. Grep for the old
+version before tagging.
 
 ## Not yet packaged
 

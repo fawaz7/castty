@@ -132,10 +132,10 @@ makepkg -si
 <details open>
 <summary><b>Debian and Ubuntu</b> (and Mint, Pop!_OS)</summary>
 
-Grab `castty_1.0.0-1_amd64.deb` from the [latest release](https://github.com/fawaz7/castty/releases/latest):
+Grab `castty_1.1.0-1_amd64.deb` from the [latest release](https://github.com/fawaz7/castty/releases/latest):
 
 ```sh
-sudo apt install ./castty_1.0.0-1_amd64.deb
+sudo apt install ./castty_1.1.0-1_amd64.deb
 ```
 
 `apt install ./file.deb` pulls in the dependencies; `dpkg -i` does not. Requires Debian 12+ or
@@ -147,8 +147,8 @@ Ubuntu 22.04+.
 <summary><b>Any distribution</b> — prebuilt binary, no compiler needed</summary>
 
 ```sh
-tar xzf castty-1.0.0-x86_64-linux.tar.gz
-cd castty-1.0.0-x86_64-linux
+tar xzf castty-1.1.0-x86_64-linux.tar.gz
+cd castty-1.1.0-x86_64-linux
 ./install.sh --no-build
 ```
 
@@ -299,6 +299,58 @@ cargo run -- info                # CLI, needs the mouse
 The test suite runs entirely against the captured frames, so you can work on the protocol layer
 without a mouse plugged in. Layout tests render the real widget tree headlessly, so a page that
 renders nothing fails a test rather than waiting for someone to notice.
+
+---
+
+## Changelog
+
+### 1.1.0
+
+**castty now shows what is on the mouse.**
+
+Until this release it showed what it had last written. The project believed the
+device could not be queried, and said so in the protocol document: across 1260
+`GET_FEATURE` calls the vendor software never reads a profile back, and that
+absence was taken as proof no such command existed. It was not. The firmware
+implements one anyway — `0x60`/`0x07`, with the profile index in byte `[5]` and
+the reply read on report `0x61` — and all five profiles come out of flash
+byte-exact. No capture could ever have shown this; only probing the command
+space directly found it.
+
+So the device is the source of truth now. The GUI reads all five profiles
+whenever it connects, including a mouse plugged in mid-session, and the CLI
+reads the profile it is about to act on. The config file remains as the
+fallback for when no mouse is attached or a read is refused, which is also what
+keeps the test suite running with no hardware.
+
+The hazard this is built around is worth stating plainly, because it is the
+kind that destroys data quietly: for a few seconds after the mouse enumerates a
+read returns 1041 zero bytes **and reports success**. The ioctl is fine; only
+the contents are wrong. Patching a field into that buffer and writing it back
+would erase the profile's DPI, button mapping and the unmapped 880-byte macro
+region, on hardware that is out of production. Nothing becomes state that the
+validator has not passed, and decoding a device reply runs that validator
+itself, so there is no path to a profile from a read with the check skipped.
+
+Two corrections to [`research/PROTOCOL.md`](research/PROTOCOL.md) came out of
+the same work. The claim that no read path existed is retracted and replaced
+with the command's full documentation. And the claim that the vendor software
+keeps the four inert colour records in step with the wheel colour is withdrawn:
+the captures in this repository show it does not — between `profile1-red.bin`
+and `profile1-green.bin` the only bytes that differ are the wheel and the logo.
+castty mirrors them and the vendor does not, so our frames were never
+byte-identical to theirs as the document claimed.
+
+The five profiles read off the device are included as capture fixtures, so the
+new behaviour is checkable against real bytes like everything else here.
+
+### 1.0.0
+
+First public release. The protocol reverse-engineered from scratch and
+published in [`research/`](research/), and a GUI and CLI built on top of it:
+per-LED colour, effects and rainbow, DPI, polling rate, angle snapping and
+tuning, lift-off distance, button mapping, macros, five profiles, and the
+surface analyzer.
 
 ---
 
