@@ -36,6 +36,15 @@ pub enum Job {
 pub enum Update {
     Connected(Identity),
     Disconnected(String),
+    /// Every profile, straight out of the mouse's flash, in slot order. Only
+    /// ever sent with all five, and only ever with blobs that passed
+    /// `validate_read_reply` -- an unvalidated read must never become state.
+    ProfilesRead(Vec<Profile>),
+    /// The mouse is connected but would not give up a profile we could trust
+    /// -- the warm-up window, most likely. Nothing is adopted and the config
+    /// file stays in charge; this is a note for the status line, not an error,
+    /// and deliberately not a `Disconnected`, which it is not.
+    ProfilesUnavailable(String),
     /// The profiles actually written (by host slot, not `Profile.index` --
     /// that byte is decoded off the wire and not to be trusted as an array
     /// index) and the slot the device ended up committed to. Both are handed
@@ -112,19 +121,50 @@ fn run(jobs: mpsc::Receiver<Job>, updates: async_channel::Sender<Update>) {
 
     while let Ok(job) = jobs.recv() {
         // Reconnect lazily: the mouse can be unplugged at any time.
-        if device.is_none() {
+        let reconnected = if device.is_none() {
             match Device::open() {
-                Ok(d) => device = Some(d),
+                Ok(d) => {
+                    device = Some(d);
+                    true
+                }
                 Err(e) => {
                     let _ = updates.send_blocking(Update::Disconnected(e.to_string()));
                     continue;
                 }
             }
+        } else {
+            false
+        };
+
+        // Greet the device and read its profiles every time a handle is
+        // opened, not only for the `Job::Connect` sent once at launch. A mouse
+        // plugged in mid-session, or unplugged and replugged, otherwise kept
+        // showing the stored copy for the rest of the run: the handle came
+        // back on the next job, but nothing ever asked it what it held.
+        // Adoption is refused while anything is dirty, so a reconnect can
+        // never discard edits that were pending when the mouse vanished.
+        if reconnected {
+            let dev = device.as_ref().expect("just opened");
+            match connect(dev, &updates) {
+                Ok(update) => {
+                    let _ = updates.send_blocking(update);
+                }
+                Err(e) => {
+                    device = None;
+                    let _ = updates.send_blocking(Update::Disconnected(e.to_string()));
+                    continue;
+                }
+            }
+            // `Job::Connect` asks for precisely what has just been done.
+            if matches!(job, Job::Connect) {
+                continue;
+            }
         }
+
         let dev = device.as_ref().expect("device present");
 
         let result = match job {
-            Job::Connect => dev.identify().map(Update::Connected),
+            Job::Connect => connect(dev, &updates),
             Job::WriteProfiles { profiles, active } => write_profiles(dev, &profiles, active),
             Job::Switch { active } => dev.commit(active).map(|()| Update::Switched(active as usize)),
             Job::SurfaceStart => dev.surface_start().map(|()| Update::SurfaceStarted),
@@ -143,6 +183,39 @@ fn run(jobs: mpsc::Receiver<Job>, updates: async_channel::Sender<Update>) {
             }
         }
     }
+}
+
+/// Identify the mouse, then read every profile back out of its flash.
+///
+/// The identify reply is sent on its own before the read starts, rather than
+/// being folded into one update at the end: reading five profiles takes a
+/// moment, and longer still if it has to wait out the warm-up window, and the
+/// window should not sit on "Looking for the mouse" while that happens.
+///
+/// A read that will not validate is *not* a disconnection. The device
+/// answered; we simply could not trust what it said, and adopting it anyway
+/// is the one outcome that could destroy a profile. So it comes back as
+/// `ProfilesUnavailable` and the app keeps whatever the config file gave it.
+/// Bailing out on the first such failure rather than trying all five is
+/// deliberate, and safe now that `read_profile` retries against a deadline
+/// longer than the measured warm-up window: the first read alone outlasts the
+/// window, so reaching this arm means the device is not going to answer, not
+/// that it was asked too early.
+fn connect(dev: &Device, updates: &async_channel::Sender<Update>) -> Result<Update, Error> {
+    let identity = dev.identify()?;
+    let _ = updates.send_blocking(Update::Connected(identity));
+
+    let mut profiles = Vec::with_capacity(crate::config::PROFILE_COUNT);
+    for index in 0..crate::config::PROFILE_COUNT {
+        match dev.read_profile(index as u8) {
+            Ok(profile) => profiles.push(profile),
+            Err(e @ Error::Read(_)) => return Ok(Update::ProfilesUnavailable(e.to_string())),
+            // An ioctl failure really is the mouse going away; let the caller
+            // drop the handle and reconnect.
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(Update::ProfilesRead(profiles))
 }
 
 /// The device operations `write_profiles` needs, factored out so a test can

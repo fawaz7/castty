@@ -205,8 +205,10 @@ impl Castty {
                 library,
                 page: Page::Lighting,
                 dirty: [false; config::PROFILE_COUNT],
-                // We do not read the device back, so which profile it is
-                // actually sitting on is unknown at launch -- `None`, not a
+                // The profiles are read back from the mouse on connect, but
+                // *which* one it is running is not: the read path returns a
+                // profile's contents by index and nothing reports the active
+                // slot. So this stays unknown at launch -- `None`, not a
                 // guessed slot, is the honest seed. It costs one commit the
                 // first time Apply runs (always enabled, always sent), which
                 // is the right trade against silently agreeing with a guess
@@ -236,6 +238,65 @@ impl Castty {
         self.lighting.apply_to(&mut self.profiles[self.current]);
         self.sensor.apply_to(&mut self.profiles[self.current]);
         self.buttons.apply_to(&mut self.profiles[self.current], &self.library)
+    }
+
+    /// Rebuild every page's widgets from the profile they are showing. The
+    /// inverse of `flush_current`, and needed wherever the profile under the
+    /// widgets changes out from under them -- a switch, a restore, or the
+    /// device's own settings being adopted.
+    fn reload_pages(&mut self) {
+        self.lighting = pages::lighting::State::from_profile(&self.profiles[self.current]);
+        self.sensor = pages::sensor::State::from_profile(&self.profiles[self.current]);
+        self.buttons =
+            pages::buttons::State::from_profile(&self.profiles[self.current], &self.library);
+    }
+
+    /// Take what the mouse actually holds as the truth.
+    ///
+    /// The device is the source of truth when it is attached and readable, so
+    /// the app now shows what is on the mouse rather than what it last wrote.
+    /// Two things this must not do, both of which would be a regression on
+    /// what came before:
+    ///
+    /// - **It must not clobber unsaved edits.** If anything is dirty the user
+    ///   has changed something that has not reached flash yet, and replacing
+    ///   it with what flash says would silently throw that work away. Nothing
+    ///   is adopted in that case -- not even the clean slots, since adopting
+    ///   half of them would leave the window showing a mixture with no way to
+    ///   tell which half is which.
+    /// - **It must not write.** Adopting is the result of a read; settings
+    ///   still reach the mouse only on an explicit Apply, and the config file
+    ///   catches up with the device on the next one. Nothing is persisted
+    ///   here, so a read can never be the thing that overwrites the fallback.
+    ///
+    /// Which profile the mouse is *running* is a separate question the read
+    /// path does not answer -- it returns a profile's contents by index and
+    /// nothing reports the active slot -- so `device_active` is deliberately
+    /// left alone.
+    fn adopt(&mut self, profiles: Vec<Profile>) {
+        // The worker only ever sends a full set, and `reload_pages` indexes by
+        // `current`, so a short one would be a bug in the worker rather than
+        // anything the device can cause. Refuse it either way, but say so in a
+        // debug build instead of silently doing nothing -- this is the one
+        // function whose whole job is to be explicit about what it will and
+        // will not take.
+        debug_assert_eq!(
+            profiles.len(),
+            self.profiles.len(),
+            "the worker must send every profile or none"
+        );
+        if profiles.len() != self.profiles.len() {
+            return;
+        }
+        if self.dirty.iter().any(|d| *d) {
+            // Deliberately does not claim the two differ: we have not compared
+            // them, and the point is only that unapplied work wins.
+            self.status = "Kept your unapplied changes; the mouse was not read".into();
+            return;
+        }
+        self.profiles = profiles;
+        self.reload_pages();
+        self.status = "Showing the settings stored on the mouse".into();
     }
 
     /// What to call a slot in status text, so it and the top-bar picker
@@ -281,12 +342,7 @@ impl Castty {
                     match self.flush_current() {
                         Ok(()) => {
                             self.current = index;
-                            self.lighting = pages::lighting::State::from_profile(&self.profiles[index]);
-                            self.sensor = pages::sensor::State::from_profile(&self.profiles[index]);
-                            self.buttons = pages::buttons::State::from_profile(
-                                &self.profiles[index],
-                                &self.library,
-                            );
+                            self.reload_pages();
                         }
                         // The macro area on the outgoing profile is full;
                         // switching now would discard the edit that
@@ -338,14 +394,7 @@ impl Castty {
                     pages::profiles::Message::RestoreConfirmed => {
                         if restore_now {
                             pages::profiles::restore_defaults(&mut self.profiles, &mut self.dirty);
-                            self.lighting =
-                                pages::lighting::State::from_profile(&self.profiles[self.current]);
-                            self.sensor =
-                                pages::sensor::State::from_profile(&self.profiles[self.current]);
-                            self.buttons = pages::buttons::State::from_profile(
-                                &self.profiles[self.current],
-                                &self.library,
-                            );
+                            self.reload_pages();
                         }
                     }
                 }
@@ -416,6 +465,13 @@ impl Castty {
                     self.status = format!("Connected, firmware {:x}.{:02x}", id.firmware >> 8, id.firmware & 0xff);
                 }
                 worker::Update::Disconnected(why) => self.status = why,
+                worker::Update::ProfilesRead(profiles) => self.adopt(profiles),
+                worker::Update::ProfilesUnavailable(why) => {
+                    // The mouse is there; it just would not answer with
+                    // anything we were willing to believe. Say so, and carry
+                    // on showing what the config file gave us.
+                    self.status = why;
+                }
                 worker::Update::Applied { indices, active } => {
                     // Persist exactly the slots the worker actually wrote --
                     // not whichever profile happens to be `current` by the
@@ -1078,6 +1134,99 @@ mod tests {
     fn can_apply_is_true_with_nothing_dirty_when_device_active_is_still_unknown() {
         let dirty = [false; config::PROFILE_COUNT];
         assert!(can_apply(&dirty, 0, None));
+    }
+
+    /// Five profiles as the mouse might hold them, recognisably different
+    /// from the factory blobs `test_app` starts with.
+    fn profiles_from_the_device() -> Vec<Profile> {
+        (0..config::PROFILE_COUNT)
+            .map(|i| {
+                let mut p = config::factory_default(i);
+                p.set_all_colours(0x11, 0x22, 0x33);
+                p
+            })
+            .collect()
+    }
+
+    /// The device is the source of truth when it is attached and readable, so
+    /// a connect-time read replaces what the config file seeded -- and the
+    /// widgets have to be rebuilt from it, or the page keeps showing the old
+    /// colour while the profile underneath says otherwise.
+    #[test]
+    fn a_device_read_is_adopted_when_nothing_is_dirty() {
+        let (mut app, _jobs) = test_app();
+
+        let _ = app.update(Message::Device(worker::Update::ProfilesRead(
+            profiles_from_the_device(),
+        )));
+
+        let wheel = app.profiles[0].wheel();
+        assert_eq!((wheel.r, wheel.g, wheel.b), (0x11, 0x22, 0x33));
+        assert_eq!(
+            app.lighting.wheel,
+            (0x11, 0x22, 0x33),
+            "the widgets must show what was read, not what the config file seeded"
+        );
+        assert!(!app.dirty.iter().any(|d| *d), "adopting is not an edit");
+    }
+
+    /// The one thing adoption must never do. A dirty slot is work the user
+    /// has done and not applied yet; replacing it with what flash says would
+    /// throw it away silently, and the user would have no way to know.
+    #[test]
+    fn a_device_read_is_refused_when_anything_is_dirty() {
+        let (mut app, _jobs) = test_app();
+        let _ = app.update(Message::Lighting(pages::lighting::Message::ModeChanged(
+            pages::lighting::Mode::Off,
+        )));
+        assert!(app.dirty[0], "sanity: the edit marked the slot dirty");
+
+        let _ = app.update(Message::Device(worker::Update::ProfilesRead(
+            profiles_from_the_device(),
+        )));
+
+        assert_ne!(
+            app.profiles[1].wheel().r,
+            0x11,
+            "not even the clean slots are adopted while an edit is pending"
+        );
+        assert!(app.dirty[0], "the pending edit survives, dirty flag and all");
+        assert_eq!(
+            app.lighting.mode,
+            pages::lighting::Mode::Off,
+            "and so does what is on screen -- a rebuild would have read Unified back off the blob"
+        );
+    }
+
+    /// Reading a profile's contents says nothing about which profile the mouse
+    /// is *running* -- no command reports that -- so adoption must leave
+    /// `device_active` alone rather than quietly implying it knows.
+    #[test]
+    fn adopting_the_device_state_does_not_claim_to_know_the_active_profile() {
+        let (mut app, _jobs) = test_app();
+        assert_eq!(app.device_active, None);
+
+        let _ = app.update(Message::Device(worker::Update::ProfilesRead(
+            profiles_from_the_device(),
+        )));
+
+        assert_eq!(app.device_active, None);
+        assert!(can_apply(&app.dirty, app.current, app.device_active));
+    }
+
+    /// A read that would not validate is not a disconnection and not an
+    /// adoption: the config file stays in charge and nothing in memory moves.
+    #[test]
+    fn an_unreadable_device_changes_nothing_but_the_status_line() {
+        let (mut app, _jobs) = test_app();
+        let before = app.profiles.clone();
+
+        let _ = app.update(Message::Device(worker::Update::ProfilesUnavailable(
+            "still warming up".into(),
+        )));
+
+        assert_eq!(app.profiles, before);
+        assert_eq!(app.status, "still warming up");
     }
 
     /// Running the surface analyzer reads the mouse; it changes nothing

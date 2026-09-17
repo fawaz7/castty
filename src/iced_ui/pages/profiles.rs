@@ -1,9 +1,10 @@
 //! Profiles page: naming the five slots, choosing the active one, and
 //! restoring factory defaults.
 //!
-//! `castty` does not read the device back (though `0x07` can -- see research/PROTOCOL.md),
-//! so these are the settings we last wrote, not
-//! what the mouse currently holds.
+//! These are the profiles read back off the mouse on connect (`0x07` -- see
+//! research/PROTOCOL.md), so the names shown here are the names the device
+//! stores. With no mouse attached, or after a read that would not validate,
+//! they fall back to what was last written, from `~/.config/castty/`.
 
 use super::super::theme::Palette;
 use super::super::widgets::{self, size, GAP, STACK, UNIT};

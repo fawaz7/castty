@@ -1,7 +1,10 @@
 //! Tests run against blobs captured from the vendor application on real
 //! hardware, so a passing encode is a frame the device has actually accepted.
 
-use castty::hardware::{DpiStep, Effect, Led, LedMode, PollingRate, Profile};
+use castty::hardware::{
+    validate_read_reply, DpiStep, Effect, Led, LedMode, PollingRate, Profile, ReadError, DPI_MAX,
+    DPI_MIN,
+};
 use std::fs;
 
 fn fixture(name: &str) -> Vec<u8> {
@@ -476,6 +479,231 @@ fn macro_capacity_is_enforced() {
     let mut slots: [Option<Macro>; 6] = Default::default();
     slots[3] = Some(too_big);
     assert!(p.set_macros(&slots).is_err(), "33 slots must not fit in 32");
+}
+
+// ---------------------------------------------------------------------------
+// The read path (0x60/0x07). `read-0x07-profile0..4` are real replies the
+// device gave when each of its five profiles was read back out of flash.
+// ---------------------------------------------------------------------------
+
+/// Nothing is adopted that the validator has not passed, so the validator
+/// accepting a genuine read is the first thing that has to hold. All five, so
+/// this covers the factory-default profiles and the two carrying settings
+/// castty had written.
+#[test]
+fn the_validator_accepts_every_real_read_reply() {
+    for index in 0..5 {
+        let raw = fixture(&format!("read-0x07-profile{index}"));
+        assert_eq!(
+            validate_read_reply(&raw),
+            Ok(()),
+            "profile {index} came off real hardware and must be trusted"
+        );
+    }
+}
+
+/// The hazard this whole path is designed around: for a few seconds after the
+/// mouse is plugged in, a profile read answers with 1041 zero bytes **and
+/// reports success**. Adopting that and writing it back would erase the
+/// profile's DPI, button mapping and the unmapped 880-byte macro region on a
+/// device that is out of production. A zeroed buffer must never validate.
+#[test]
+fn the_validator_rejects_the_warm_up_answer() {
+    let zeros = vec![0u8; 1041];
+    assert_eq!(validate_read_reply(&zeros), Err(ReadError::WarmUp));
+}
+
+/// A short buffer is not a profile either, and must be caught before anything
+/// indexes into it.
+#[test]
+fn the_validator_rejects_a_short_buffer() {
+    assert_eq!(validate_read_reply(&[0u8; 64]), Err(ReadError::BadLength(64)));
+    assert_eq!(validate_read_reply(&[]), Err(ReadError::BadLength(0)));
+}
+
+/// Zeroing any one of the structural bytes has to be enough on its own -- a
+/// buffer that is *mostly* right is the dangerous case, since the all-zero
+/// check cannot see it.
+#[test]
+fn the_validator_rejects_a_partly_zeroed_reply() {
+    let good = fixture("read-0x07-profile2");
+    for (at, expected) in [(34usize, 0x08u8), (102, 0x03)] {
+        let mut raw = good.clone();
+        raw[at] = 0;
+        assert_eq!(
+            validate_read_reply(&raw),
+            Err(ReadError::Constant { at, expected, found: 0 }),
+            "a zeroed [{at}] must not pass"
+        );
+    }
+    // and a DPI slot the hardware has never been seen to accept
+    let mut raw = good.clone();
+    raw[68..70].copy_from_slice(&0u16.to_le_bytes());
+    assert_eq!(validate_read_reply(&raw), Err(ReadError::Dpi { step: 0, value: 0 }));
+
+    // a write frame is not a read reply: [1] carries the 0x08 command where a
+    // reply carries the 0x01 ack
+    assert!(validate_read_reply(&fixture("factory-default-p2")).is_err());
+}
+
+/// **Every DPI this application will write must survive being read back.** A
+/// validated range narrower than the range `encode` accepts is a trap: the
+/// profile writes fine, and then every later read of it fails, burns the retry
+/// budget, and falls back to the config file for good. The first version of the
+/// validator used the 400-9150 figure `PROTOCOL.md` records as "confirmed
+/// values", which is the range *seen in captures* rather than a hardware limit
+/// -- while castty's own DPI slider goes from 100 to 10000. No fixture could
+/// catch it: all five read captures carry values comfortably inside both ranges.
+///
+/// The same bug exists in libratbag's driver for this device.
+#[test]
+fn every_dpi_the_encoder_accepts_reads_back() {
+    let mut p = Profile::decode_response(&fixture("read-0x07-profile2")).unwrap();
+    for value in [DPI_MIN, 150, 400, 3000, 9150, 9200, DPI_MAX] {
+        p.dpi = [DpiStep::linked(value); 3];
+        let written = p
+            .encode()
+            .unwrap_or_else(|e| panic!("the encoder accepts DPI {value}: {e}"));
+
+        // What the device hands back for that profile is the same payload
+        // under the reply framing -- the ack at [1] where a write frame carries
+        // the 0x08 command.
+        let mut as_read = written.clone();
+        as_read[1] = 0x01;
+        assert_eq!(
+            validate_read_reply(&as_read),
+            Ok(()),
+            "DPI {value} can be written but not read back"
+        );
+        assert_eq!(
+            Profile::decode_response(&as_read).unwrap().dpi[0],
+            DpiStep::linked(value)
+        );
+    }
+}
+
+/// The validator's job is to reject garbage, not to police values -- but zero
+/// is garbage, and rejecting it is all the warm-up buffer needs.
+#[test]
+fn a_zero_dpi_is_still_refused() {
+    let mut raw = fixture("read-0x07-profile2");
+    for (step, base) in [(0usize, 68usize), (1, 77), (2, 98)] {
+        let mut one = raw.clone();
+        one[base..base + 2].copy_from_slice(&0u16.to_le_bytes());
+        assert_eq!(validate_read_reply(&one), Err(ReadError::Dpi { step, value: 0 }));
+    }
+    // and the Y axis of a slot, not just the X
+    raw[70..72].copy_from_slice(&0u16.to_le_bytes());
+    assert_eq!(validate_read_reply(&raw), Err(ReadError::Dpi { step: 0, value: 0 }));
+}
+
+/// Byte `[0]` of a read reply carries no reliable value. The same device, read
+/// with the same tool, answered `0x00` in one session and `0x60` in another --
+/// stable within a session, different across power states. Every fixture here
+/// shows `0x00` only because they were all captured in one sitting shortly
+/// after a replug, and an earlier version of the validator turned that accident
+/// into a constant and refused every read on a device that had been up a while.
+/// So a reply must validate whatever `[0]` says.
+#[test]
+fn the_validator_ignores_the_unstable_first_byte() {
+    for index in 0..5 {
+        let mut raw = fixture(&format!("read-0x07-profile{index}"));
+        assert_eq!(raw[0], 0x00, "the fixtures were captured with [0] = 0x00");
+        for observed in [0x00u8, 0x60, 0x61, 0xff] {
+            raw[0] = observed;
+            assert_eq!(
+                validate_read_reply(&raw),
+                Ok(()),
+                "profile {index} must validate with [0] = 0x{observed:02x}"
+            );
+            let p = Profile::decode_response(&raw)
+                .unwrap_or_else(|e| panic!("[0] = 0x{observed:02x} must still decode: {e}"));
+            assert_eq!(p.index, index as u8, "the index still comes from [16]");
+            assert_eq!(p.name, format!("Profile{}", index + 1));
+        }
+    }
+}
+
+/// What does identify a reply: the ack at `[1]`. A write frame carries the
+/// `0x08` command there, which is the only header byte separating the two
+/// framings now that `[0]` is untrusted.
+#[test]
+fn the_validator_still_requires_the_ack_at_byte_one() {
+    let mut raw = fixture("read-0x07-profile2");
+    raw[1] = 0x08;
+    assert_eq!(
+        validate_read_reply(&raw),
+        Err(ReadError::Constant { at: 1, expected: 0x01, found: 0x08 })
+    );
+    assert!(Profile::decode_response(&raw).is_err());
+}
+
+/// Decoding must not depend on the framing. A read reply differs from a write
+/// frame only in the two-byte header (`00 01` where a write leads `61 08`),
+/// with the profile index at `[16]` rather than `[5]`; everything from `[16]`
+/// on is identical. Profiles 2-4 were still at factory defaults when they were
+/// read, so the captured reply and the captured write frame are the same
+/// profile seen through the two framings -- and re-encoding either must give
+/// back the write frame.
+#[test]
+fn a_read_reply_decodes_to_the_same_profile_as_the_write_frame() {
+    for index in 2..5 {
+        let reply = Profile::decode_response(&fixture(&format!("read-0x07-profile{index}")))
+            .unwrap_or_else(|e| panic!("profile {index} read reply must decode: {e}"));
+        let written = Profile::decode(&fixture(&format!("factory-default-p{index}"))).unwrap();
+
+        assert_eq!(reply.index, index as u8, "the index comes from [16] in a reply");
+        assert_eq!(reply.index, written.index);
+        assert_eq!(reply.name, written.name);
+        assert_eq!(reply.leds, written.leds);
+        assert_eq!(reply.dpi, written.dpi);
+        assert_eq!(reply.dpi_step_count, written.dpi_step_count);
+        assert_eq!(reply.active_dpi_step, written.active_dpi_step);
+        assert_eq!(reply.polling, written.polling);
+        assert_eq!(reply.angle_snapping, written.angle_snapping);
+        assert_eq!(reply.angle_tuning, written.angle_tuning);
+        assert_eq!(reply.lift_off, written.lift_off);
+        assert_eq!(reply.buttons, written.buttons);
+
+        // The strongest form of the same claim: a profile read off the device
+        // re-encodes to exactly the frame the vendor app sent for it, macro
+        // region and all. Anything read can therefore be written back.
+        assert_eq!(
+            reply.encode().unwrap(),
+            fixture(&format!("factory-default-p{index}")),
+            "profile {index} must re-encode to the captured write frame"
+        );
+    }
+}
+
+/// Profiles 0 and 1 were not at factory defaults when they were read, so they
+/// have no matching write fixture -- but they still have to decode to the
+/// settings the bytes plainly carry, and survive a re-encode unchanged apart
+/// from the header the framing owns.
+#[test]
+fn a_read_reply_round_trips_through_encode() {
+    for index in 0..5 {
+        let raw = fixture(&format!("read-0x07-profile{index}"));
+        let p = Profile::decode_response(&raw).unwrap();
+        let encoded = p.encode().unwrap();
+
+        // [0], [1] and [5] are the framing; everything else must be untouched.
+        assert_eq!(&encoded[6..], &raw[6..], "profile {index} payload changed on re-encode");
+        assert_eq!(encoded[0], 0x61, "re-encoded as a write frame");
+        assert_eq!(encoded[1], 0x08);
+        assert_eq!(encoded[5], index as u8);
+        assert_eq!(Profile::decode(&encoded).unwrap().index, index as u8);
+    }
+}
+
+/// The name each profile was read back with, straight from the device.
+#[test]
+fn read_replies_carry_the_profile_names_on_the_device() {
+    for index in 0..5 {
+        let p = Profile::decode_response(&fixture(&format!("read-0x07-profile{index}"))).unwrap();
+        assert_eq!(p.name, format!("Profile{}", index + 1));
+        assert_eq!(p.dpi_step_count, 3);
+    }
 }
 
 /// Both switch types take the same three direction parameters, captured by

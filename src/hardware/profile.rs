@@ -6,7 +6,9 @@
 //! presumed macro storage -- therefore survive a read/modify/write untouched,
 //! which matters for a device whose firmware we cannot inspect.
 
-use super::protocol::{offset, PROFILE_FRAME_LEN, REPORT_PROFILE, CMD_PROFILE_WRITE};
+use super::protocol::{
+    offset, CMD_PROFILE_WRITE, PROFILE_FRAME_LEN, REPORT_PROFILE, RESPONSE_ACK,
+};
 use std::fmt;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,6 +31,124 @@ impl fmt::Display for DecodeError {
 }
 
 impl std::error::Error for DecodeError {}
+
+/// Why a blob read back from the device could not be trusted.
+///
+/// These are *structural* complaints, not decoding failures: the ioctl
+/// succeeded and the device answered, but what it said cannot be a profile.
+/// That distinction matters because of the warm-up window -- see
+/// [`validate_read_reply`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReadError {
+    BadLength(usize),
+    /// 1041 zero bytes, reported as a success. This is the warm-up answer.
+    WarmUp,
+    /// A byte that is fixed in every frame the device has ever produced was
+    /// not what it always is.
+    Constant { at: usize, expected: u8, found: u8 },
+    /// A DPI slot outside the range the hardware has been observed to accept.
+    Dpi { step: usize, value: u16 },
+    /// The device answered with a different profile than the one asked for.
+    /// The `0x60` channel latches its last response, so this is what a reply
+    /// left over from an earlier request looks like.
+    WrongProfile { asked: u8, got: u8 },
+}
+
+impl fmt::Display for ReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ReadError::BadLength(n) => {
+                write!(f, "read {n} bytes, expected {PROFILE_FRAME_LEN}")
+            }
+            ReadError::WarmUp => write!(
+                f,
+                "the mouse answered with an empty profile; it is still warming up"
+            ),
+            ReadError::Constant { at, expected, found } => write!(
+                f,
+                "byte [{at}] is 0x{found:02x}, not the constant 0x{expected:02x}"
+            ),
+            ReadError::Dpi { step, value } => write!(
+                f,
+                "DPI step {} reads {value}, outside {DPI_MIN}..={DPI_MAX}",
+                step + 1
+            ),
+            ReadError::WrongProfile { asked, got } => {
+                write!(f, "asked for profile {asked} and got profile {got}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReadError {}
+
+/// Decide whether a blob the device sent back is really a profile.
+///
+/// **This is not paranoia, it is the one thing standing between the user and a
+/// wiped mouse.** For a few seconds after the device enumerates, a profile read
+/// returns 1041 zero bytes *and reports success* -- the ioctl is fine, only the
+/// contents are wrong. A caller that adopted that buffer, patched one colour
+/// into it and wrote it back would erase the profile's DPI, button mapping and
+/// the whole unmapped 880-byte macro region, on hardware that is out of
+/// production and cannot be replaced.
+///
+/// So every read is checked against the shape a real profile has: the ack at
+/// `[1]`, the constant at `[34]`, the step count at `[102]`, and all three DPI
+/// slots. None of those can be zero in a genuine profile, which is what makes
+/// the warm-up buffer impossible to mistake for one.
+///
+/// **Byte `[0]` is deliberately not checked.** It carries no reliable value in
+/// a read reply: the same device, read with the same tool, has answered with
+/// `0x00` in one session and `0x60` in another, stable within a session and
+/// differing across power states. Every captured fixture in `research/captures`
+/// shows `0x00` only because they were all taken in one sitting shortly after a
+/// replug; an earlier version of this function turned that accident into a rule
+/// and refused every read on a device that had been up for a while. libratbag's
+/// driver for the same hardware ignores `[0]` too. What actually identifies a
+/// good reply is the structural constants here plus the profile index the
+/// device echoes at `[16]`, which the caller cross-checks against the index it
+/// asked for.
+///
+/// **The DPI check uses `DPI_MIN`..=`DPI_MAX`, the same range `encode` accepts,
+/// and that coupling is deliberate.** A validated range narrower than what some
+/// tool can write is a trap: the profile writes fine, and then every subsequent
+/// read of it fails, burns the retry budget and falls back to the config file
+/// for good. `PROTOCOL.md` records "confirmed values range 400-9150", but that
+/// is the range *observed in captures*, not a hardware limit -- this app's own
+/// slider goes to 100 and 10000, and libratbag or the vendor software may write
+/// something else again. So the rule is: **the validated range must be at least
+/// as wide as anything any tool can write**, and it is deliberately wider than
+/// what the captures show. Rejecting zero is all the warm-up buffer needs, and
+/// `DPI_MIN` gives that. The validator's job is to reject garbage, not to police
+/// values.
+pub fn validate_read_reply(raw: &[u8]) -> Result<(), ReadError> {
+    if raw.len() != PROFILE_FRAME_LEN {
+        return Err(ReadError::BadLength(raw.len()));
+    }
+    // Checked first purely so the error says what actually happened; the
+    // constants below would reject it anyway.
+    if raw.iter().all(|b| *b == 0) {
+        return Err(ReadError::WarmUp);
+    }
+    for (at, expected) in [
+        (offset::CMD, RESPONSE_ACK),
+        (offset::CONSTANT, offset::CONSTANT_VALUE),
+        (offset::DPI_STEP_COUNT, offset::DPI_STEP_COUNT_VALUE),
+    ] {
+        if raw[at] != expected {
+            return Err(ReadError::Constant { at, expected, found: raw[at] });
+        }
+    }
+    for (step, base) in offset::DPI_BASES.iter().enumerate() {
+        for at in [*base, base + 2] {
+            let value = le16(raw, at);
+            if !(DPI_MIN..=DPI_MAX).contains(&value) {
+                return Err(ReadError::Dpi { step, value });
+            }
+        }
+    }
+    Ok(())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ValueError {
@@ -64,6 +184,9 @@ impl std::error::Error for ValueError {}
 
 /// Verified in capture across 400..9150. The wider bound is the Castor's rated
 /// maximum; values outside the verified range are accepted but untested.
+///
+/// `validate_read_reply` checks reads against this same range, on purpose:
+/// anything this range lets a tool write has to be readable again afterwards.
 pub const DPI_MIN: u16 = 100;
 pub const DPI_MAX: u16 = 10_000;
 
@@ -429,7 +552,33 @@ impl Profile {
         if raw[0] != REPORT_PROFILE || raw[offset::CMD] != CMD_PROFILE_WRITE {
             return Err(DecodeError::NotAProfileFrame { report: raw[0], cmd: raw[offset::CMD] });
         }
+        Ok(Self::decode_payload(raw, raw[offset::PROFILE_INDEX]))
+    }
 
+    /// Decode a blob the device sent back in answer to a profile read.
+    ///
+    /// The payload is the same as a write frame's, byte for byte, so there is
+    /// one decoder underneath; only the header differs. `[1]` is the `0x01` ack
+    /// the whole `0x60` channel answers with, where a write frame carries the
+    /// `0x08` command; `[0]` is not reliable and is not looked at (see
+    /// [`validate_read_reply`]). The profile index comes from `[16]` rather
+    /// than `[5]`, because a response carries the generic ack header instead of
+    /// a framed command and `[5]` is simply zero.
+    ///
+    /// **This runs [`validate_read_reply`] itself and refuses anything that
+    /// fails it**, so there is no way to get a `Profile` out of a device read
+    /// without the check having happened. An earlier version documented "call
+    /// the validator first" and left it at that; a doc comment is the wrong
+    /// place to keep the one invariant that stands between the warm-up buffer
+    /// and a wiped profile.
+    pub fn decode_response(raw: &[u8]) -> Result<Self, ReadError> {
+        validate_read_reply(raw)?;
+        Ok(Self::decode_payload(raw, raw[offset::PROFILE_INDEX_DUP]))
+    }
+
+    /// The fields, given a blob of the right length and the slot it belongs
+    /// to. Shared by both framings; every offset from `[16]` on is identical.
+    fn decode_payload(raw: &[u8], index: u8) -> Self {
         let name_bytes = &raw[offset::NAME..offset::NAME + offset::NAME_LEN];
         let name = String::from_utf8_lossy(name_bytes)
             .trim_end_matches('\0')
@@ -450,9 +599,9 @@ impl Profile {
             dpi[i] = DpiStep { x: le16(raw, *base), y: le16(raw, base + 2) };
         }
 
-        Ok(Profile {
+        Profile {
             raw: raw.to_vec(),
-            index: raw[offset::PROFILE_INDEX],
+            index,
             name,
             polling: PollingRate::from_byte(raw[offset::POLLING]),
             leds,
@@ -466,7 +615,7 @@ impl Profile {
                 let base = offset::BUTTON_TABLE + i * offset::BUTTON_ENTRY_LEN;
                 ButtonAction::from_entry(&raw[base..base + offset::BUTTON_ENTRY_LEN])
             }),
-        })
+        }
     }
 
     /// Patch the known fields back into the bytes this profile was decoded

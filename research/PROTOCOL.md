@@ -23,7 +23,9 @@ the hardware has really accepted.
 The channel is **request/response over the same report**, not a plain register read:
 
 1. `HIDIOCSFEATURE` on report `0x60` — a 64-byte buffer, `[0]=0x60`, `[1]=<command>`, rest zero.
-2. `HIDIOCGFEATURE` on report `0x60` — 64 bytes back, `[0]=0x00`, `[1]=0x01` (ack/status), payload follows.
+2. `HIDIOCGFEATURE` on report `0x60` — 64 bytes back, `[1]=0x01` (ack/status), payload follows.
+   `[0]` reads `0x00` in the captures here, but it is **not** a constant — see "The read path" below,
+   where the same byte was observed taking a different value across power states. Do not validate it.
 
 A bare `GET` with no preceding `SET` returns whichever response was latched last, and that survives
 re-opening the device; on a freshly powered device it is zeros, which is why probing cold looks dead.
@@ -384,8 +386,23 @@ reply is read on report `0x61` because a profile does not fit in 64 bytes:
 to `[2]`, `[3]`, `[4]`, `[7]` or `[16]` is ignored.
 
 The response uses the **same field layout as the write blob**, so every offset in the table above
-applies unchanged. Only the two-byte header differs: a response leads `00 01` where a write frame
-leads `61 08`.
+applies unchanged. Only the header differs, and only `[1]` of it is dependable:
+
+- **`[1]` is `0x01`**, the ack the whole `0x60` channel answers with, where a write frame carries the
+  `0x08` command. Solid across every read taken.
+- **`[0]` carries no reliable value. Do not test it.** The captures in [`captures/`](captures/) all
+  show `00`, and an earlier version of this section stated the header was `00 01` on that basis. It
+  is not a constant. The same device, read with the same tool, answered `[0]=0x00` in one session and
+  `[0]=0x60` in another hours later — stable *within* a session, different *across* power states. The
+  five fixtures were all taken in one sitting shortly after a replug, so they record one of the
+  values `[0]` can take, not a rule. A consumer that validated `[0]=0x00` refused every read on a
+  device that had been up for a while, which is exactly how this was found. libratbag's driver for
+  the same hardware ignores `[0]`, and that is the right call.
+
+What *does* identify a good reply is `[1]`, the structural constants (`[34]`=`0x08`,
+`[102]`=`0x03`), the DPI slots being in range, and the profile index the device echoes at `[16]`
+matching the one that was asked for — the last of these also catches a stale latched response.
+Thirty consecutive reads across all five profiles held all four of those without exception.
 
 Verified against hardware:
 
@@ -397,14 +414,24 @@ Verified against hardware:
 
 **Warm-up caveat.** For a short window after enumeration — still true about five seconds in — the
 device answers `0x07` with an all-zero buffer instead of refusing. Anything reading a profile must
-validate the response before trusting it: check the constant at `[34]` is `0x08`, the DPI step count
-at `[102]` is `0x03`, and the DPI values are in range. A consumer that patches a field into a
-zero-filled buffer and writes it back would erase the profile's DPI, buttons and macros.
+validate the response before trusting it: check the ack at `[1]` is `0x01`, the constant at `[34]` is
+`0x08`, the DPI step count at `[102]` is `0x03`, and the DPI values are in range. A consumer that
+patches a field into a zero-filled buffer and writes it back would erase the profile's DPI, buttons
+and macros. Retry against a **wall-clock deadline longer than five seconds**, not a small number of
+attempts: being asked too early is the ordinary case, and giving up early means falling back to
+whatever local state the tool has, permanently.
 
-Consequence for `castty`: the application no longer *has* to persist its own state, and could read
-the device instead. It has not been changed to do so — the state file remains the source of truth
-for now — but the option now exists, and any new consumer of this protocol should prefer reading the
-device.
+**Do not validate the DPI values against the 400-9150 figure below.** That is the range *observed in
+captures*, not a hardware limit, and a validated range narrower than what some tool can write is a
+trap: the profile writes fine, and then every later read of it fails and the tool falls back to its
+own stale copy for good. `castty`'s own slider spans 100-10000, so its validator does too. **The
+validated range must be at least as wide as anything any tool can write.** Rejecting zero is all the
+warm-up buffer needs.
+
+Consequence for `castty`: the application no longer persists its own state as the primary record. It
+reads all five profiles on connect and shows those; the state file is kept only as the fallback for
+when no mouse is attached, or when a read will not validate. Any new consumer of this protocol
+should do the same — read the device, and validate before believing it.
 
 #### Macros
 

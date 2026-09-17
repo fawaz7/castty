@@ -208,12 +208,39 @@ against real captured frames -- over synthesising expected bytes by hand.
 
 ### Hardware notes
 
-- **The device has a read path, but `castty` does not use it yet.** `0x60`/`0x07` with the profile
-  index in `[5]` returns that profile from flash on report `0x61` (see research/PROTOCOL.md); all
-  five were verified byte-exact. `castty` still persists state to
-  `$XDG_CONFIG_HOME/castty/profile0.bin`, seeded from the factory-default blob embedded via
-  `include_bytes!`, because it predates the discovery. Switching to reading the device is an open
-  improvement, not a bug -- but do not write new code that assumes settings cannot be queried.
+- **The device is the source of truth, and `castty` reads it.** `0x60`/`0x07` with the profile index
+  in `[5]` returns that profile from flash on report `0x61` (see research/PROTOCOL.md); all five were
+  verified byte-exact. `Device::read_profile` drives it; the GUI reads all five on a successful
+  connect (`worker::connect` → `Update::ProfilesRead`) and the CLI reads the one it is about to edit.
+  So the app shows what the mouse holds, not what it last wrote.
+- **Every read is validated before it becomes state, and this is not optional.** For a few seconds
+  after the device is plugged in, a profile read returns 1041 zero bytes **and reports success** --
+  the ioctl is fine, only the contents are wrong. Patching a field into that and writing it back
+  would erase the profile's DPI, button mapping and the unmapped 880-byte macro region on hardware
+  that is out of production. `profile::validate_read_reply` checks the ack at `[1]`, the constant at
+  `[34]`, the step count at `[102]` and all three DPI slots, and `read_profile` retries against an
+  8-second deadline — longer than the measured five-second warm-up window — rather than trusting the
+  first answer, and cross-checks the profile index the device echoes at `[16]`. `Profile::decode_response`
+  runs the validator itself, so nothing can get a `Profile` out of a device read without the check.
+- **The DPI check uses the same `DPI_MIN`..`DPI_MAX` range `encode` accepts, and must keep doing so.**
+  A validated range narrower than what a tool can write is a trap: the profile writes fine and every
+  later read of it then fails and falls back to the config file permanently. `PROTOCOL.md`'s
+  "confirmed 400-9150" is what the captures showed, not a hardware limit.
+- **Byte `[0]` of a read reply is not a constant — never validate it.** The same device answers
+  `0x00` in one session and `0x60` in another; it is stable within a session and differs across power
+  states. Every fixture in `research/captures/` shows `0x00` because they were taken in one sitting,
+  and treating that as a rule refused every read on a warm device. See research/PROTOCOL.md.
+- **Adoption never clobbers unsaved edits.** If any profile is dirty the GUI adopts nothing, because
+  replacing a pending edit with what flash says would silently discard the user's work. Reading also
+  triggers no write, to the device or to the config file: settings still reach the mouse only on an
+  explicit Apply.
+- **`$XDG_CONFIG_HOME/castty/profileN.bin` is now the fallback, not the primary.** It is what the app
+  shows when no mouse is attached or when every read attempt fails validation, seeded from the
+  factory-default blobs embedded via `include_bytes!`. That path must keep working with no hardware:
+  `cargo test` runs without a device.
+- **A read does not say which profile is active.** `0x07` returns a profile's contents by index;
+  nothing reports the slot the mouse is running. `device_active` is still an assumption seeded
+  `None`, and this change does not alter that.
 - `Profile` keeps the bytes it decoded from and patches only known fields on encode, so unknown
   regions -- including the unmapped 880-byte macro area -- survive a read/modify/write. Preserve this
   property when adding fields.

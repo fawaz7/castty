@@ -7,7 +7,7 @@ pub mod protocol;
 
 pub use device::{surface_score, Device, Error, Identity};
 pub use profile::{
-    Button, ButtonAction, DpiStep, Effect, Led, LedMode, Macro, MacroEvent, PollingRate,
-    Profile,
-    BUTTONS, EFFECTS,
+    validate_read_reply, Button, ButtonAction, DpiStep, Effect, Led, LedMode, Macro, MacroEvent,
+    PollingRate, Profile, ReadError,
+    BUTTONS, DPI_MAX, DPI_MIN, EFFECTS,
 };

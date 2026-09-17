@@ -35,7 +35,7 @@ has to be honest about them.
 
 | Fact | Consequence for the UI |
 |---|---|
-| **The app does not read the mouse back.** A read path exists (`0x07`, see research/PROTOCOL.md) but the UI predates it and does not use it. | Every value on screen is *what we last wrote*, not what the device holds. Never phrase anything as "current settings". State is persisted to `~/.config/castty/profileN.bin`. Adopting the read path would remove this constraint. |
+| **The app reads the mouse back** (`0x07`, see research/PROTOCOL.md): all five profiles are read on a successful connect and adopted. | The window shows what the device actually holds, so "current settings" is now an honest phrase. Two caveats it must stay honest about: a read is only adopted when nothing is dirty — an unapplied edit is never replaced by what flash says — and a read is refused outright unless it validates, because for a few seconds after the mouse is plugged in a read answers with 1041 zeroes and reports success. With no mouse, or a read that will not validate, the window falls back to `~/.config/castty/profileN.bin` and is showing what was last written, not what the device holds. |
 | **Writes go to flash.** | No live-apply. Edits are local until an explicit **Apply**. A write per slider drag would wear the flash for nothing. |
 | **The commit frame is the only profile-select mechanism.** Byte 5 of a commit says which profile the mouse switches to. | Selecting a profile cannot take effect without a commit. Writing several profiles in a row ends on whichever was written last, so a multi-write must end with a commit for the slot the user actually selected. |
 | **Five profiles**, each with its own settings *and* its own macros. | The profile selector is global (top bar), not per-page. Switching profiles reloads every page's state. |
@@ -414,10 +414,11 @@ the logic is correct.
 - **`worker::write_profiles` ordering is verified by inspection**, not by a test
   against real hardware sequencing. There is now a `ProfileSink` trait seam and
   a recording fake covering call order, but no end-to-end hardware test exists.
-- **`device_active` is an assumption.** The app does not read the device, so it
-  cannot know which profile the mouse is on at launch. It is seeded `None` so
-  the first Apply always commits. (The read path found later returns a profile's
-  contents but not which one is active, so this would still need care.)
+- **`device_active` is an assumption.** The app cannot know which profile the
+  mouse is on at launch. It is seeded `None` so the first Apply always commits.
+  Reading the device did not fix this and was not expected to: `0x07` returns a
+  profile's contents by index, and nothing in the protocol reports which one is
+  active, so this would still need care.
 - The production seed in `Castty::new()` is not itself covered by a test; only
   the test double's copy of it is.
 

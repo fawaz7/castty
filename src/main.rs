@@ -16,8 +16,42 @@ fn profile_index(args: &[String]) -> usize {
         .unwrap_or(0)
 }
 
-fn load_profile(index: usize) -> Result<castty::hardware::Profile, Box<dyn std::error::Error>> {
-    Ok(config::load(index))
+/// The profile a command is about to **modify and write back**.
+///
+/// This must be what the mouse actually holds, and there is no fallback: if the
+/// read fails, the command fails. Falling back to the stored copy here would
+/// mean writing it over the device, and a stale local copy carries stale DPI
+/// steps, a stale button mapping and a stale 880-byte macro region -- so a
+/// refused read would destroy exactly what the validator exists to protect,
+/// reached through the fallback instead of through the zero buffer. A read is
+/// refused precisely when we do not know what the device holds, which is the
+/// worst possible moment to overwrite it.
+fn profile_to_edit(
+    dev: &Device,
+    index: usize,
+) -> Result<castty::hardware::Profile, Box<dyn std::error::Error>> {
+    dev.read_profile(index as u8).map_err(|e| {
+        format!(
+            "{e}\n\
+             refusing to write the stored copy over it -- that could overwrite DPI steps, \
+             button mapping and macros the mouse holds.\n\
+             If the mouse was just plugged in, wait a few seconds and try again."
+        )
+        .into()
+    })
+}
+
+/// The profile a command only wants to **show**. Nothing is written, so falling
+/// back to the stored copy costs nothing worse than displaying something stale,
+/// and that beats refusing to print anything at all.
+fn profile_to_show(dev: &Device, index: usize) -> castty::hardware::Profile {
+    match dev.read_profile(index as u8) {
+        Ok(profile) => profile,
+        Err(e) => {
+            eprintln!("warning: {e}; showing the stored copy instead");
+            config::load(index)
+        }
+    }
 }
 
 fn save_profile(index: usize, p: &castty::hardware::Profile) -> Result<(), Box<dyn std::error::Error>> {
@@ -54,7 +88,8 @@ USAGE:
     castty help                 show this message
     castty version              show the version
 
-Settings are stored in {} because the device has no read-back path.
+Settings are read from the mouse itself. A copy is kept in {}
+as a fallback for when the device will not answer a read.
 Every command other than help and version needs the mouse connected, and
 /dev/hidraw* access -- see packaging/60-mionix-castor.rules.",
         env!("CARGO_PKG_VERSION"),
@@ -93,7 +128,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             println!("device:   {}", dev.path().display());
             println!("firmware: 0x{:04x}", id.firmware);
             println!("mcu:      {}", id.mcu);
-            let p = load_profile(index)?;
+            let p = profile_to_show(&dev, index);
             println!(
                 "profile:  {} | dpi {}/{}/{} | polling {} | snap {} | angle {}",
                 p.name,
@@ -110,7 +145,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 .get(1)
                 .and_then(|s| parse_hex_colour(s))
                 .ok_or("expected a colour like ff00ff")?;
-            let mut p = load_profile(index)?;
+            let mut p = profile_to_edit(&dev, index)?;
             p.set_all_colours(r, g, b);
             dev.write_profile(&p)?;
             save_profile(index, &p)?;
@@ -132,7 +167,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // rainbow is a flag on the mode byte, so it layers onto any effect
             let rainbow = args.iter().any(|a| a == "rainbow");
             let mode = castty::hardware::LedMode::new(effect, rainbow);
-            let mut p = load_profile(index)?;
+            let mut p = profile_to_edit(&dev, index)?;
             p.set_mode(mode);
             dev.write_profile(&p)?;
             save_profile(index, &p)?;
@@ -144,7 +179,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !(1..=3).contains(&step) {
                 return Err("step must be 1, 2 or 3".into());
             }
-            let mut p = load_profile(index)?;
+            let mut p = profile_to_edit(&dev, index)?;
             p.dpi[step - 1] = castty::hardware::DpiStep::linked(value);
             dev.write_profile(&p)?;
             save_profile(index, &p)?;

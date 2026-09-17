@@ -193,8 +193,9 @@ sudo apt remove castty         # Debian/Ubuntu
 ./install.sh --uninstall       # install.sh
 ```
 
-Your settings in `~/.config/castty/` are always left alone — the mouse cannot be read back, so that
-directory is the only record of how it is configured. Delete it by hand if you want no trace.
+Your settings in `~/.config/castty/` are always left alone. Your actual configuration lives on the
+mouse; that directory is a fallback copy for when the mouse isn't there to be asked. Delete it by
+hand if you want no trace.
 
 ---
 
@@ -204,7 +205,7 @@ Launching with no arguments opens the GUI. With arguments it's a CLI, which is h
 and for startup services:
 
 ```sh
-castty info                      # device identity and stored profile
+castty info                      # device identity and the profile on the mouse
 castty led ff6600                # set both LEDs
 castty mode breathing rainbow    # effect, optionally with rainbow
 castty dpi 1 1600                # set a DPI step
@@ -218,15 +219,18 @@ castty help                      # full usage
 
 ## Two things worth knowing
 
-### The mouse cannot be read back
+### castty shows what's on the mouse
 
-No command returns the device's stored settings. This is a property of the hardware, not a gap in the
-reverse engineering — the Windows software has exactly the same limitation and keeps its own state
-file.
+The Castor can be read back. The Windows software never does it, and this project believed for a
+while that no such command existed — but the firmware has one, and every profile comes out of flash
+byte-exactly. castty reads all five when it connects, so what you see is what the mouse is actually
+holding, even if it was configured from another machine or from the Windows software.
 
-castty therefore shows what *it* last wrote, persisted in `~/.config/castty/`. If you configure the
-mouse from another machine or from the Windows software, castty won't know, and will show stale
-values until you next press Apply.
+One wrinkle worth knowing about: for the first few seconds after the mouse is plugged in, it answers
+a read with an empty profile and says the read succeeded. castty checks the shape of every reply and
+refuses anything that isn't plainly a real profile, rather than risk writing an empty one back. If a
+read is refused, or if no mouse is attached, castty falls back to the copy in `~/.config/castty/` and
+shows what was last written instead.
 
 ### LED colours are approximate
 

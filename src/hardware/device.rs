@@ -4,7 +4,7 @@
 //! collection. hidraw numbering is not stable across reboots or replugs, so the
 //! node is always resolved through sysfs rather than hardcoded.
 
-use super::profile::Profile;
+use super::profile::{Profile, ReadError};
 use super::protocol::*;
 use std::fmt;
 use std::fs;
@@ -12,13 +12,18 @@ use std::io;
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Debug)]
 pub enum Error {
     NotFound,
     Io(io::Error),
     Value(super::profile::ValueError),
+    /// The device answered a read, but not with something that can be a
+    /// profile. Distinct from `Io`: the mouse is there and talking, so a
+    /// caller must not report this as a disconnection -- nor, ever, write the
+    /// buffer back, nor write anything else in its place.
+    Read(super::profile::ReadError),
 }
 
 impl fmt::Display for Error {
@@ -36,6 +41,7 @@ impl fmt::Display for Error {
             ),
             Error::Io(e) => write!(f, "{e}"),
             Error::Value(e) => write!(f, "{e}"),
+            Error::Read(e) => write!(f, "could not read the mouse: {e}"),
         }
     }
 }
@@ -51,6 +57,12 @@ impl From<io::Error> for Error {
 impl From<super::profile::ValueError> for Error {
     fn from(e: super::profile::ValueError) -> Self {
         Error::Value(e)
+    }
+}
+
+impl From<super::profile::ReadError> for Error {
+    fn from(e: super::profile::ReadError) -> Self {
+        Error::Read(e)
     }
 }
 
@@ -89,6 +101,25 @@ fn hidioc_get_feature(size: usize) -> u64 {
 pub fn surface_score(raw: u8) -> u8 {
     (f64::from(raw) * 0.18).round().clamp(0.0, 10.0) as u8
 }
+
+/// How long a profile read keeps trying before it gives up, and how long it
+/// waits between tries.
+///
+/// A deadline rather than an attempt count, because what has to be outlasted is
+/// a wall-clock window, not a number of tries: `research/PROTOCOL.md` measured
+/// the all-zero warm-up answer as **still true about five seconds** after the
+/// device enumerates. Eight seconds leaves real headroom over that measurement
+/// rather than landing just under it -- an earlier attempt-count version came to
+/// about 3.2 s and would have given up while the device was still warming.
+///
+/// The cost is paid only when a read is actually failing. On a warm mouse the
+/// first attempt succeeds and none of this is reached, and within a batch only
+/// the first profile can pay it: once one read validates, the mouse is warm.
+const READ_DEADLINE: Duration = Duration::from_secs(8);
+const READ_RETRY_DELAY: Duration = Duration::from_millis(400);
+/// How long the device is given to put a reply in place after the command.
+/// Matches `request()`, where it is established for the 64-byte channel.
+const READ_SETTLE: Duration = Duration::from_millis(50);
 
 /// Firmware version and MCU string from the identify command.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,15 +189,21 @@ impl Device {
         Ok(buf)
     }
 
-    /// Send a bare command on the 0x60 report.
-    fn command(&self, cmd: u8, arg: Option<u8>) -> Result<(), Error> {
+    /// Send a bare command on the 0x60 report, with one byte of argument at
+    /// `arg_at`. Which slot that is depends on the command: the surface
+    /// analyzer's sub-command sits at `[2]`, while the profile commands all
+    /// carry their index at `[5]`.
+    fn command_at(&self, cmd: u8, arg_at: usize, arg: u8) -> Result<(), Error> {
         let mut frame = vec![0u8; CMD_FRAME_LEN];
         frame[0] = REPORT_CMD;
         frame[offset::CMD] = cmd;
-        if let Some(a) = arg {
-            frame[2] = a;
-        }
+        frame[arg_at] = arg;
         self.set_feature(&frame)
+    }
+
+    /// Send a bare command on the 0x60 report.
+    fn command(&self, cmd: u8, arg: Option<u8>) -> Result<(), Error> {
+        self.command_at(cmd, offset::CMD_ARG, arg.unwrap_or(0))
     }
 
     /// The 0x60 channel is request/response: a bare GET with no preceding SET
@@ -201,6 +238,47 @@ impl Device {
     pub fn surface_result(&self) -> Result<u8, Error> {
         let r = self.request(CMD_SURFACE, Some(SURFACE_RESULT))?;
         Ok(r[offset::SURFACE_VALUE])
+    }
+
+    /// Read one profile back out of the mouse's flash.
+    ///
+    /// The device really is the source of truth: every profile can be read,
+    /// and the reply survives unplugging, so it is flash and not a cached copy
+    /// of the last write. What it is *not* is reliable the instant the mouse
+    /// enumerates -- for a few seconds a read answers with 1041 zero bytes and
+    /// reports success. That is why nothing here returns a `Profile` the
+    /// validator has not passed, and why a failure keeps trying until
+    /// `READ_DEADLINE` rather than giving up on the first bad answer: the usual
+    /// cause is simply being early, and the window to outlast is measured in
+    /// seconds, so a deadline is the honest unit rather than a try count.
+    ///
+    /// Reading is the safe half of this protocol. Nothing below writes.
+    pub fn read_profile(&self, index: u8) -> Result<Profile, Error> {
+        let deadline = Instant::now() + READ_DEADLINE;
+        loop {
+            self.command_at(CMD_PROFILE_READ, offset::PROFILE_INDEX, index)?;
+            thread::sleep(READ_SETTLE);
+            // An ioctl failure is the mouse going away, not a warm-up: it
+            // propagates rather than being retried.
+            let raw = self.get_feature(REPORT_PROFILE, PROFILE_FRAME_LEN)?;
+
+            // `decode_response` validates before it decodes, so nothing below
+            // this line can be a buffer that failed the structural checks.
+            let failure = match Profile::decode_response(&raw) {
+                // The 0x60 channel latches its last response, so a reply that
+                // is structurally a profile can still be the *wrong* profile --
+                // one left over from an earlier request. The index the device
+                // echoes at [16] is what settles it.
+                Ok(profile) if profile.index == index => return Ok(profile),
+                Ok(profile) => ReadError::WrongProfile { asked: index, got: profile.index },
+                Err(e) => e,
+            };
+
+            if Instant::now() >= deadline {
+                return Err(Error::Read(failure));
+            }
+            thread::sleep(READ_RETRY_DELAY);
+        }
     }
 
     /// Write one profile and commit it.

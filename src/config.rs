@@ -1,9 +1,18 @@
-//! Local persistence of profile state.
+//! The local fallback copy of profile state.
 //!
-//! `castty` does not read the device's stored configuration (it can be read -- see the
-//! `0x07` command in research/PROTOCOL.md -- but this predates that), so the current configuration
-//! only exists here. Both the CLI and the GUI go through this module so they
-//! cannot drift apart.
+//! This module used to be the only place the configuration existed, because the
+//! project believed the device could not be queried. It can: `0x60`/`0x07`
+//! returns any profile out of flash byte-exactly (see research/PROTOCOL.md), and
+//! both the CLI and the GUI now read the mouse and show what it actually holds.
+//!
+//! What stays here is the fallback, and it earns its keep. A read has to be
+//! validated before it can be trusted -- for a few seconds after the mouse is
+//! plugged in, a read returns 1041 zero bytes and reports success -- so a read
+//! can legitimately be refused, and the app has to have something to show with
+//! no mouse attached at all. That is this: the last state written to flash,
+//! seeded from the factory blobs the vendor app itself writes on a reset.
+//!
+//! Both front ends go through this module so they cannot drift apart.
 
 use crate::hardware::Profile;
 use std::path::PathBuf;
