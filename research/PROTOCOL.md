@@ -101,8 +101,8 @@ results diverge from the vendor's for no gain in honesty.
 
 #### The four extra colour records are inert
 
-`[49]`, `[53]`, `[57]` and `[61]` are real records with the same `<R><G><B><mode>` shape, and the
-vendor software keeps them in step with the wheel colour, but **nothing on this device reads them**.
+`[49]`, `[53]`, `[57]` and `[61]` are real records with the same `<R><G><B><mode>` shape, but
+**nothing on this device reads them**.
 
 Tested by setting each to a different colour, and then setting all four to magenta -- a colour no
 physical LED was using -- across all five profiles, and exercising everything that might surface
@@ -112,12 +112,29 @@ them:
 - switching profiles from the mouse itself, through all five: colours changed to each profile's own
   LED colour, with no magenta at any point
 
-No capture could have settled this: the vendor software always writes all four together, so they
-never varied independently. Only writing distinct values directly could separate them.
+No capture could have settled this: the vendor software never varies them independently. Only
+writing distinct values directly could separate them.
 
-They are most likely fields the shared Mionix software stack uses on another model. `castty` mirrors
-the wheel colour into them exactly as the vendor does -- harmless, and keeps our frames
-byte-identical to the vendor's.
+They are most likely fields the shared Mionix software stack uses on another model.
+
+**The vendor software does not keep their colour in step with the wheel.** An earlier version of
+this document said it did, and that `castty` mirroring the wheel colour into them kept our frames
+byte-identical to the vendor's. Both halves are wrong, and the captures in this directory show it:
+in `profile1-red.bin` versus `profile1-green.bin` the *only* differing bytes are `[39]`, `[40]`,
+`[43]` and `[44]` -- the wheel and logo. The four inert records stayed at the factory `c9ff00`
+throughout `profile1-red`, `-green`, `-blue`, `-macros` and `-macro-timing`, while the wheel moved
+through four different colours. The fixtures that do show all six agreeing are either factory blobs,
+where every record is the same colour anyway, or `castty`'s own writes.
+
+So `castty` mirrors and the vendor does not. The mirroring is harmless -- the records are inert, as
+proven above -- but it is `castty`'s behaviour, not a reproduction of the vendor's, and the frames
+are not byte-identical. **A new consumer of this protocol should patch `[39]` and `[43]` only and
+leave the other four records alone**, which is both closer to the vendor and a smaller change to a
+blob read from the device.
+
+The **mode** byte is a separate matter and the advice to write all six stands: every fixture has all
+six mode bytes equal, and while no vendor capture varies the mode -- they are all `0x01` -- the
+hardware experiments above establish that the firmware reads the mode globally from `[42]`.
 
 **`[39]` is the scroll wheel and `[43]` is the logo.** Established by lighting one at a time: with the
 wheel set to red alone, `[39]` held `(255,0,0)` and `[43]` was `(0,0,0)`; with the logo green alone,
