@@ -132,10 +132,10 @@ makepkg -si
 <details open>
 <summary><b>Debian and Ubuntu</b> (and Mint, Pop!_OS)</summary>
 
-Grab `castty_1.1.0-1_amd64.deb` from the [latest release](https://github.com/fawaz7/castty/releases/latest):
+Grab `castty_1.1.1-1_amd64.deb` from the [latest release](https://github.com/fawaz7/castty/releases/latest):
 
 ```sh
-sudo apt install ./castty_1.1.0-1_amd64.deb
+sudo apt install ./castty_1.1.1-1_amd64.deb
 ```
 
 `apt install ./file.deb` pulls in the dependencies; `dpkg -i` does not. Requires Debian 12+ or
@@ -147,8 +147,8 @@ Ubuntu 22.04+.
 <summary><b>Any distribution</b> — prebuilt binary, no compiler needed</summary>
 
 ```sh
-tar xzf castty-1.1.0-x86_64-linux.tar.gz
-cd castty-1.1.0-x86_64-linux
+tar xzf castty-1.1.1-x86_64-linux.tar.gz
+cd castty-1.1.1-x86_64-linux
 ./install.sh --no-build
 ```
 
@@ -303,6 +303,25 @@ renders nothing fails a test rather than waiting for someone to notice.
 ---
 
 ## Changelog
+
+### 1.1.1
+
+**The portable tarball's documented install actually works now.**
+
+`install.sh --no-build` looked for the binary at `target/release/castty`, which
+is where a source checkout builds it — but the release tarball ships it at the
+top level, with no source to build from. So the install route the README
+recommends for anyone without a compiler failed on the first command, and had
+been failing since 1.0.0. The script now finds the binary in either layout, and
+when there genuinely is no binary it says something useful about which of the
+two situations you are in rather than suggesting you build source that is not
+there.
+
+`install.sh --uninstall` run under `sudo` also pointed at `/root/.config/castty`
+when telling you where your settings were left, because `$HOME` under sudo is
+root's. It names your own directory now.
+
+No change to the application itself.
 
 ### 1.1.0
 

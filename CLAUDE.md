@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Project status
 
 `castty` is a Linux desktop application (Rust, iced) that configures the Mionix Castor mouse. **Version
-1.1.0, shipped and public** at `github.com/fawaz7/castty`. No other Linux tool supports this device —
+1.1.1, shipped and public** at `github.com/fawaz7/castty`. No other Linux tool supports this device —
 not OpenRGB, not libratbag — so the protocol was derived from scratch.
 
 **The protocol is cracked, verified against hardware, and complete for every setting the vendor

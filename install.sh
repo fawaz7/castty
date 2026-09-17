@@ -128,14 +128,23 @@ if [ "$action" = uninstall ]; then
         $SUDO gtk-update-icon-cache -f "$prefix/share/icons/hicolor" 2>/dev/null || true
 
     say ""
-    say "Removed. Your settings in ${dim}${XDG_CONFIG_HOME:-$HOME/.config}/castty${r} were left alone;"
+    # Under sudo, HOME is root's -- naming /root/.config/castty sends the user
+    # to a directory that is not theirs and probably does not exist.
+    user_home=$HOME
+    [ -n "${SUDO_USER:-}" ] && user_home=$(eval echo "~$SUDO_USER")
+    say "Removed. Your settings in ${dim}${XDG_CONFIG_HOME:-$user_home/.config}/castty${r} were left alone;"
     say "delete that directory too if you want no trace."
     exit 0
 fi
 
 # --- build ------------------------------------------------------------------
 
+# Two layouts put the binary in two places. A source checkout builds to
+# target/release/; the release tarball ships it at the top level beside this
+# script, with no source to build from. Look for both, newest-wins is not the
+# question -- a tarball simply has no target/ at all.
 bin="$here/target/release/castty"
+[ -x "$bin" ] || [ ! -x "$here/castty" ] || bin="$here/castty"
 
 if [ "$build" = yes ]; then
     if ! command -v cargo >/dev/null 2>&1; then
@@ -153,7 +162,17 @@ Already have a built binary? Re-run with --no-build."
     ( cd "$here" && cargo build --release ) || die "build failed"
 fi
 
-[ -x "$bin" ] || die "no binary at $bin -- drop --no-build, or run cargo build --release"
+if [ ! -x "$bin" ]; then
+    if [ -f "$here/Cargo.toml" ]; then
+        die "no binary at $bin -- drop --no-build to build it, or run cargo build --release first."
+    else
+        die "no castty binary found next to this script.
+
+This looks like the release tarball rather than a source checkout, so there is
+nothing here to build. Unpack the tarball again and run install.sh from inside
+it, or clone the repository and run ./install.sh without --no-build."
+    fi
+fi
 
 # --- install ----------------------------------------------------------------
 
